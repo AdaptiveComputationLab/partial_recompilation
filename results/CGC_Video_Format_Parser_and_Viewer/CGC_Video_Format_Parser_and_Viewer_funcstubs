@@ -1,0 +1,1 @@
+cgc_parseCVFFrame:cgc_malloc,cgc_free,cgc_printf,cgc_memcpy,cgc_memset,cgc_readBits,cgc_bitsNeeded

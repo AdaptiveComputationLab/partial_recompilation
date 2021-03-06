@@ -1,0 +1,28 @@
+#!/bin/bash
+
+rm compile_log
+rm results/*
+rm -r working/*
+
+echo "================================================="
+echo "RUNNING"
+echo "================================================="
+
+for target in `ls $1`; do
+	path=$1/$target/$target"_recomp.c"
+	if [[ -e $path ]]; then
+		echo "Processing "$path
+		echo "=================================================" &>> compile_log
+		echo $path &>> compile_log
+		# echo ${target%.c} &>> compile_log
+		gcc $path -m32 -w -o "results/"${target%.c} &>> compile_log
+		echo "=================================================" &>> compile_log
+	fi
+done
+
+echo "Copying compiled targets..."
+for target in `ls results`; do
+	echo "   - Copying" $1/$target
+	cp -r $1/$target working/
+done
+echo "================================================="
