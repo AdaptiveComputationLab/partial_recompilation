@@ -1,1 +1,9 @@
 Scripts for Recompilation with IdaPro HexRays 7.5
+
+-genprog_decomp_ida.py: 
+
+-get_ida_details.py: idascript for extracting decompiled information. Should not be run directly
+
+-asm_fitter.py: helper script for "fitting" the recompiled c code into the genprog pipeline. Assumes create_asm.py is in the target_directory
+
+-compile_all: batch compilation of .c files in a directory, prints the ones that succeed
