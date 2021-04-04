@@ -9,10 +9,14 @@ import time
 
 # path to idat binary
 
-IDA_PATH="/home/htay/seclab_ida/ida/idat"
+IDA_DEFAULT_PATH=os.environ['HOME']+"/seclab_ida/ida/idat"
+if os.environ['IDA_BASE_DIR']:
+	IDA_PATH=os.environ['IDA_BASE_DIR']+"/idat"
+else:
+	IDA_PATH=IDA_DEFAULT_PATH
 
 # path to defs.h
-DEFS_PATH="refs/defs.h"
+DEFS_PATH=os.path.dirname(os.path.realpath(__file__))+"/refs/defs.h"
 
 # stub markers for processing
 
@@ -846,14 +850,6 @@ class CodeCleaner:
 
         print("dataMap", dataMap)
         # arguments to wrapper function
-        for d in dataMap.keys():
-            print("data", d)
-            mainStub +=  "\t\tNULL,\n"
-            dataDef = d.split(";")[0]
-            dataDef = dataDef.split("=")[0].strip()
-            dataType, dataName = self.getTypeAndLabel(dataDef)
-            wrapperStub += "\tvoid* my%s,\n" % dataName
-
 
         for s in stubMap.keys():
             mainStub +=  "\t\tNULL,\n" 
@@ -863,6 +859,18 @@ class CodeCleaner:
             wrapperStub += " my%s,\n" % self.get_stub_name(s)
             print(s)
             print("  - STUBNAME: ", self.get_stub_name(s))
+
+        # note from pdr: looks like when data declarations are included, the 
+        # function prototype and funcstubs order of symbol definitions 
+        # are not consistent
+        for d in dataMap.keys():
+            print("data", d)
+            mainStub +=  "\t\tNULL,\n"
+            dataDef = d.split(";")[0]
+            dataDef = dataDef.split("=")[0].strip()
+            dataType, dataName = self.getTypeAndLabel(dataDef)
+            wrapperStub += "\tvoid* my%s,\n" % dataName
+            print("   - DATA DECL: ", dataName)
 
         for argTuple in args:
             argType = argTuple[0]
