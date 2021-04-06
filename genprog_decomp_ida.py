@@ -9,10 +9,14 @@ import time
 
 # path to idat binary
 
-IDA_PATH="/home/htay/seclab_ida/ida/idat"
+IDA_DEFAULT_PATH=os.environ['HOME']+"/seclab_ida/ida/idat"
+if os.environ['IDA_BASE_DIR']:
+    IDA_PATH=os.environ['IDA_BASE_DIR']+"/idat"
+else:
+    IDA_PATH=IDA_DEFAULT_PATH
 
 # path to defs.h
-DEFS_PATH="refs/defs.h"
+DEFS_PATH=os.path.dirname(os.path.realpath(__file__))+"/refs/defs.h"
 
 # stub markers for processing
 
@@ -645,9 +649,24 @@ class CodeCleaner:
                 header = header[3:] # handle commented out cases
 
             dataType, dataName = self.getTypeAndLabel(header)
-            defLine = "%s *(p%s);\n" %(dataType, dataName)
-            dataName = dataName.split("[")[0] # handle arrays
-            defLine += "#define %s (*p%s)\n" % (dataName, dataName)
+            array_size=len(re.findall("\[\d*\]",dataName))
+            print("Array Size:", array_size)
+            defLine=""
+            if array_size==2:
+                print("// --- WARNING! Two-dimensional array objects are not yet supported")
+                defLine += "%s *(p%s);\n" %(dataType, dataName)
+                dataName = dataName.split("[")[0] # handle arrays
+                defLine += "#define %s (*p%s)\n" % (dataName, dataName)
+                print(" // --- END OF WARNING!\n")
+            elif array_size==1 and "*" not in dataType:
+                dataName = dataName.split("[")[0] # handle arrays
+                defLine = "%s *(p%s);\n" %(dataType, dataName)
+                defLine += "#define %s (p%s)\n" % (dataName, dataName)
+            else:
+                defLine = "%s *(p%s);\n" %(dataType, dataName)
+                dataName = dataName.split("[")[0] # handle arrays
+                defLine += "#define %s (*p%s)\n" % (dataName, dataName)
+
             if line.startswith("//"):
                 defLine += "//"
             print("    ---->", defLine)
@@ -846,14 +865,6 @@ class CodeCleaner:
 
         print("dataMap", dataMap)
         # arguments to wrapper function
-        for d in dataMap.keys():
-            print("data", d)
-            mainStub +=  "\t\tNULL,\n"
-            dataDef = d.split(";")[0]
-            dataDef = dataDef.split("=")[0].strip()
-            dataType, dataName = self.getTypeAndLabel(dataDef)
-            wrapperStub += "\tvoid* my%s,\n" % dataName
-
 
         for s in stubMap.keys():
             mainStub +=  "\t\tNULL,\n" 
@@ -863,6 +874,29 @@ class CodeCleaner:
             wrapperStub += " my%s,\n" % self.get_stub_name(s)
             print(s)
             print("  - STUBNAME: ", self.get_stub_name(s))
+        
+        # note from pdr: looks like when data declarations are included, the 
+        # function prototype and funcstubs order of symbol definitions 
+        # are not consistent
+        for d in dataMap.keys():
+            print("data", d)
+            mainStub +=  "\t\tNULL,\n"
+            dataDef = d.split(";")[0]
+            dataDef = dataDef.split("=")[0].strip()
+            dataType, dataName = self.getTypeAndLabel(dataDef)
+            array_size=len(re.findall("\[\d*\]",dataName))
+            if array_size==2:
+                print("SORRY: two-dimensional array objects just aren't working right now")
+                print(" ==> "+dataType+" "+dataName)
+                wrapperStub += "// --- WARNING! Two-dimensional array objects are not yet supported"
+                wrapperStub += "\tvoid* my%s,\n" % dataName
+                wrapperStub += " // --- END OF WARNING!\n"
+            elif array_size==1 and "*" not in dataType:
+                dataNamex = dataName.split("[")[0] # handle arrays
+                wrapperStub += "\tvoid* my%s,\n" % dataNamex
+            else:
+                wrapperStub += "\tvoid* my%s,\n" % dataName
+            print("   - DATA DECL: ", dataName)
 
         for argTuple in args:
             argType = argTuple[0]
@@ -890,8 +924,16 @@ class CodeCleaner:
                 dataDef = dataDef[3:] # handle commented out cases
             dataDef = dataDef.split("=")[0].strip()
             dataType, dataName = self.getTypeAndLabel(dataDef)
-            wrapperStub += "\tp%s = (%s*) my%s;\n" % (dataName, dataType, dataName)
-
+            array_size=len(re.findall("\[\d*\]",dataName))
+            if array_size==2:
+                print("// --- WARNING! Two-dimensional array objects are not yet supported\n")
+                wrapperStub += "\tp%s = (%s*) my%s;\n" % (dataName, dataType, dataName)
+                print(" // --- END OF WARNING!\n")
+            elif array_size==1 and "*" not in dataType:
+                dataNamex = dataName.split("[")[0] # handle arrays
+                wrapperStub += "\tp%s = (%s*) my%s;\n" % (dataNamex, dataType, dataNamex)
+            else:
+                wrapperStub += "\tp%s = (%s*) my%s;\n" % (dataName, dataType, dataName)
 
         for s in stubMap.keys():
             name = self.get_stub_name(s)
@@ -1093,7 +1135,10 @@ class GenprogDecomp:
 
 
 def main():
-
+    if not os.path.isfile(IDA_PATH):
+        print("ERROR: Environmental variable IDA_BASE_PATH is not set or '"+IDA_DEFAULT_PATH+"' does not exist")
+        import sys
+        sys.exit(-1)
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('target_list',
                         help='path to the list of target binaries + paths')
