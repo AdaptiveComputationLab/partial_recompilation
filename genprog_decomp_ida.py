@@ -652,7 +652,7 @@ class CodeCleaner:
             array_size=len(re.findall("\[\d*\]",dataName))
             print("Array Size:", array_size)
             defLine=""
-            if array_size==2:
+            if array_size>=2:
                 print("// --- WARNING! Two-dimensional array objects are not yet supported")
                 defLine += "%s *(p%s);\n" %(dataType, dataName)
                 dataName = dataName.split("[")[0] # handle arrays
@@ -885,12 +885,11 @@ class CodeCleaner:
             dataDef = dataDef.split("=")[0].strip()
             dataType, dataName = self.getTypeAndLabel(dataDef)
             array_size=len(re.findall("\[\d*\]",dataName))
-            if array_size==2:
+            if array_size>=2:
                 print("SORRY: two-dimensional array objects just aren't working right now")
                 print(" ==> "+dataType+" "+dataName)
                 wrapperStub += "// --- WARNING! Two-dimensional array objects are not yet supported"
                 wrapperStub += "\tvoid* my%s,\n" % dataName
-                wrapperStub += " // --- END OF WARNING!\n"
             elif array_size==1 and "*" not in dataType:
                 dataNamex = dataName.split("[")[0] # handle arrays
                 wrapperStub += "\tvoid* my%s,\n" % dataNamex
@@ -925,7 +924,7 @@ class CodeCleaner:
             dataDef = dataDef.split("=")[0].strip()
             dataType, dataName = self.getTypeAndLabel(dataDef)
             array_size=len(re.findall("\[\d*\]",dataName))
-            if array_size==2:
+            if array_size>=2:
                 print("// --- WARNING! Two-dimensional array objects are not yet supported\n")
                 wrapperStub += "\tp%s = (%s*) my%s;\n" % (dataName, dataType, dataName)
                 print(" // --- END OF WARNING!\n")
