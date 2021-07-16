@@ -148,6 +148,29 @@ class CodeCleaner:
             return False
         return True
 
+    def get_type_label(self,argTypeRaw):
+        argType = self.get_typebase(argTypeRaw)
+        argTypeArray = argType.strip().rsplit(maxsplit=1)
+        if len(argTypeArray) > 1:
+            argTypeLabel = argTypeArray[-1]
+        else:
+            argTypeLabel = argTypeArray[0]
+        return argTypeLabel
+        
+    def is_function_prototype(self,argType):
+        func=re.match("((struct\s+)?\w+)\s+\*?(\(\*\w+\)|\w+)\((.*)\)",argType)
+        types=[]
+        ret=False
+        if func:
+            print("Function: "+argType)
+            types.append(self.get_type_label(func.group(1)))
+            x=re.split(r',',func.group(4))
+            for t in x:
+                types.append(self.get_type_label(t))
+            ret=True
+        return ret,types
+
+
     def get_typebase(self, argType):
         argType = argType.strip()
 
@@ -250,7 +273,7 @@ class CodeCleaner:
                                 line = line.replace(match, newLine)
 
                         if matches:
-                            print("      Associating %s with %s" % (typedefLine, line))
+                            print("      Associating %s with %s [%s]" % (typedefLine, line, origName))
                             done.add(origName)
                             # substituteMap[typedefLine] = line
                         # break
@@ -311,16 +334,19 @@ class CodeCleaner:
 
         defline = line.strip(";") # prune out ending semicolon
         argString = ""
+        typedef_decl=False
 
         if "{" in line or "(" in line:
             array = defline.split("{")
             header = array[0].strip()
-            typeName = header.rsplit(maxsplit=1)[1].strip() # get name, drop struct prefixes
+            f = header.rsplit(maxsplit=1) 
+            struct_or_union = f[0].strip() # get struct_or_union
+            typeName = f[1].strip() # get name, drop struct prefixes
 
             if line.startswith("typedef struct") or line.startswith("typedef union") :
                 body = array[1].strip()
                 argString = body.split("}")[0]
-                # print(argString)
+                typedef_decl=True
             else:
                 array = defline.split(")", maxsplit=1)
                 header = array[0].split("(")[1].strip()
@@ -351,16 +377,19 @@ class CodeCleaner:
             # print("ARGSTRING", argString)
             # print(args)
             for argTypeRaw, argName, argOrig in args:
+                isfunc,type_labels = self.is_function_prototype(argTypeRaw)
+                if not isfunc:
                 argType = self.get_typebase(argTypeRaw)
                 argTypeArray = argType.strip().rsplit(maxsplit=1)
                 # print(argTypeArray)
                 if len(argTypeArray) > 1:
-                    argTypeLabel = argTypeArray[-1]
+                        type_labels = [ argTypeArray[-1] ]
                 else:
-                    argTypeLabel = argTypeArray[0]
+                        type_labels = [ argTypeArray[0] ]
                 # print("    --> baseType %s" % (argTypeLabel))
                 # print("    --> typeName   %s" % (typeName))
                 # print("      - defined: ", defined)
+                for argTypeLabel in type_labels:
                 if argTypeLabel == typeName:
                     continue # skip self references
                 if argTypeLabel not in PRIMITIVES and argTypeLabel not in defined:
@@ -423,9 +452,15 @@ class CodeCleaner:
             elif line.startswith("struct"):
                 # forward declaration
                 typeName = line.strip().strip(";").rsplit(maxsplit=1)[1];
-                print("    !! FORWARD DECLARATION", typeName)
-                forward_declared.append(typeName)
+                print("    !! FORWARD DECLARATION - STRUCT", typeName)
                 definitions += "struct "+typeName+";\n"
+                forward_declared.append(typeName)
+            elif line.startswith("union"):
+                # forward declaration
+                typeName = line.strip().strip(";").rsplit(maxsplit=1)[1];
+                print("    !! FORWARD DECLARATION - UNION", typeName)
+                forward_declared.append(typeName)
+                definitions += "union "+typeName+";\n"
             else:
                 definitions += line+"\n"
 
@@ -439,13 +474,19 @@ class CodeCleaner:
                     if not self.is_basic_typedef(line):
                         array = line.split("{")
                         header = array[0].strip()
-                        typeName = header.rsplit(maxsplit=1)[1].strip() # get name, drop struct prefixes
+                        f=header.rsplit(maxsplit=1) # get name, drop struct prefixes
+                        struct_or_union = f[0].strip() # get name, drop struct prefixes
+                        typeName = f[1].strip() # get name, drop struct prefixes
+                       
                         print("EVALUTING [%s] as Placeholder!" % typeName)
                         print("  ==", argTypeRaw)
                         print("  == ", (self.recursive_dep_check(typeDefMap, waitingStructs, typeName)))
                         print("  ==", (typeName not in rejectedPlaceholders))
                         if self.recursive_dep_check(typeDefMap, waitingStructs, typeName) and typeName not in rejectedPlaceholders:
-                            potentialPlaceholders.add(typeName)
+                            if "union" in struct_or_union:
+                                potentialPlaceholders.add("union "+typeName)
+                            else:
+                                potentialPlaceholders.add(typeName)
                         # if any of the waitingStructs use the needed placeholder without a pointer, reject this placeholder
                         if  "*" not in argTypeRaw:
                             print("removing ", argTypeLabel, "as placeholder. argTypeLabel", argTypeLabel)
@@ -457,6 +498,10 @@ class CodeCleaner:
         for placeholder in potentialPlaceholders:
             # create placeholder forward declaration
             if placeholder not in forward_declared:
+                if "union" in placeholder:
+                    print("Adding Placeholder ", placeholder)
+                    definitions += placeholder+";\n"
+                else:
                 print("Adding Placeholder Struct ", placeholder)
                 definitions += "struct "+placeholder+";\n"
 
@@ -844,6 +889,9 @@ class CodeCleaner:
                 targetHeader = f
                 array = f.split("(", maxsplit=1)
                 targetRetType, targetName = self.getTypeAndLabel(array[0])
+                if len(array)<2:
+                    break #no arguments
+                else:
                 argLine = array[1].strip(";").strip(")")
                 # print(f, argLine)
                 if len(argLine.strip()) <= 0:
@@ -854,6 +902,7 @@ class CodeCleaner:
                     argTuple = self.getTypeAndLabel(arg)
                     args.append(argTuple)
                 break
+                    
 
         if target == "main":
             target = "patch" + target

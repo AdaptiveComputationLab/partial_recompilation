@@ -6,8 +6,10 @@
 #define LOWORD(x) (*((unsigned short*)&(x)))
 #define COERCE_UNSIGNED_INT64(x) (*((unsigned long*)(&x)))
 #define HIBYTE(x) (*((unsigned char*)&(x)+1))
+#define LOBYTE(x) (*((unsigned char*)&(x)))
 
 
 // from IDADOC support: _OWORD is an unknown type; the only known info is its size: 16 bytes
 #define _OWORD (unsigned long long)
 
+#define __short short
