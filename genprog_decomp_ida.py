@@ -333,6 +333,8 @@ class CodeCleaner:
         resolved = True
 
         defline = line.strip(";") # prune out ending semicolon
+        # get rid of attributes, we don't care
+        defline,num = re.subn(r"__attribute__\(\(\w+(\(\w+\))?\)\)",r"",defline)
         argString = ""
         typedef_decl=False
 

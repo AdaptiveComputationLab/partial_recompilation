@@ -35,6 +35,24 @@ TYPEDEF_END = "============================== END ==============================
 PRIMITIVES = ["int", "long", "short", "char", "void", "double", "float", "long",
               "unsigned int", "unsigned long", "unsigned short", "unsigned char", "void", "long double"]
 
+def strip_binary(binary,out=None):
+    import subprocess
+    b_out=out
+    if not out:
+        b_out=f"{binary}.strip"
+    x=subprocess.run(f"cp {binary} {b_out}",shell=True)
+    if x.returncode!=0:
+        print(f"[WARNING!] Failed to create {b_out} from binary source.\nSkipping stripping of symbols")
+        b_out=binary
+    else:
+        x=subprocess.run(f"/usr/bin/strip --strip-all {b_out}",shell=True)
+        if x.returncode!=0:
+            print(f"[WARNING!] Failed to strip symbols from {b_out}!")
+            print(f"Reverting to original binary")
+            b_out=binary
+    return b_out
+
+
 class IDAWrapper:
     def __init__(self, typedefScriptPath):
         self.typedefScriptPath = typedefScriptPath
@@ -108,14 +126,14 @@ class IDAWrapper:
         ida_command = [IDA_PATH, '-B', '-S'+"\""+self.typedefScriptPath+"\"", "-A", binary_path]
         tmpName = ""
         with tempfile.NamedTemporaryFile(mode="r", dir="/tmp", prefix="prd-ida-",delete=True) as tmpFile:
-            print("RUNNING: ", " ".join(ida_command))
+            print("RUNNING: ", " ".join(ida_command),flush=True)
             env = os.environ
             env["IDALOG"] = tmpFile.name
             sp = subprocess.run(ida_command, env=env)
 
             typedefs = tmpFile.read()
             tmpName = tmpFile.name
-            print("    -> Temp File Name:", tmpName)
+            print("    -> Temp File Name:", tmpName,flush=True)
 
         tmpFile.close()
         
@@ -132,7 +150,7 @@ class IDAWrapper:
                     continue
                 structDump += line
 
-        print("FINISHED RUNNING")
+        print("FINISHED RUNNING",flush=True)
         return structDump
 
 
@@ -666,8 +684,8 @@ class CodeCleaner:
                 line = line.replace("__cdecl", "")
                 # print("newline", line)
 
-            # handle :: classes
-            line = line.replace("::", "__")
+            ## handle :: classes (let's translate after everything is generated)
+            #line = line.replace("::", "__")
 
             # replace namings
             line = line.replace("int64", "long")
@@ -762,6 +780,7 @@ class CodeCleaner:
                 line = ""
                 continue
             else:
+                print("{} [DATA SYMBOL]".format(base_dataName))
                 ext_syms.add(base_dataName)
                 
             array_size=len(re.findall("\[\d*\]",dataName))
@@ -838,7 +857,7 @@ class CodeCleaner:
         #dataMap_per_func[fn] = {'prototypes':dict(),'sym2proto':dict(),'ext_vars':set(),'local_vars':set()} 
         # get unique set of ext_vars that need to be added to list, then post-process to get lines from 'sym2proto' LUT
 
-        print(f"fn_list : {fn_list}")
+        #print(f"fn_list : {fn_list}")
         for i in fn_list:
             print(f"->{i}")
             j=stubs_per_func[i]
@@ -984,6 +1003,7 @@ class CodeCleaner:
                     
                 print("[get_stubs] [done] preparse_line: {}".format(preparse_line),flush=True)
                 sym_type, sym_name=self.getTypeAndLabel(preparse_line)
+                #print(f"[get_stubs] [done] type : {sym_type}, label : {sym_name}",flush=True)
                 nm_sym_name=sym_name
                 ext_var=False
                 if sym_name in data_symbols:
@@ -1022,6 +1042,7 @@ class CodeCleaner:
                     print("FOUND DECOMPILED FUNCTION  ' {}' : {}".format(decomp.group(0),line))
                     lstubs['external'].append(False)
                 else:
+                    print("FOUND EXTERNAL FUNCTION  ' {}' : {}".format(sym_name,line))
                     lstubs['external'].append(True)
                     
                 if line not in stubs['prototypes'] and not decomp:
@@ -1198,6 +1219,18 @@ class CodeCleaner:
                 output[i] = output[i].replace(target, "")
         return output
 
+    def transform_cpp(self,decomp):
+        # s/_cppobj //g
+        d=re.sub(r"\b_thiscall\b",r"",decomp)
+        d=re.sub(r"\b_cppobj\b",r"",d)
+        # s/(\w+)<(\w+)>/${1}_${2}_/g
+        d=re.sub(r"(\S+)::(\S+)",r"\1___\2",d)
+        # s/(\w+)<(\w+)*>/${1}_${2}_p_/g
+        d=re.sub(r"(\S+)<(\S+)*>",r"\1_\2_p_",d)
+        # s/(\w+)::(\w+)/${1}___${2}/g
+        d=re.sub(r"(\S+)<(\S+)>",r"\1_\2_",d)
+        return d
+
 
        
     def replace_data_defines(self, output, dataMap, removeList):
@@ -1222,9 +1255,9 @@ class CodeCleaner:
         return placeholders
 
 
-    def generate_wrapper(self, target_list, funcs, stubMap, dataMap, detour_prefix, translation_dict):
+    def generate_wrapper(self, target_list, funcs, stubMap, dataMap, detour_prefix, translation_dict,demang2mangLUT):
         rev_trans={v:k for k,v in translation_dict.items()}
-        mainStub = "void main()\n" + \
+        mainStub = "int main()\n" + \
                "{\n"
         wrapperStub = ""
         #translation_dict = dict()
@@ -1248,7 +1281,7 @@ class CodeCleaner:
             args = []
             targetHeader = ""
             targetRetType = "void"
-            call_me[target]="{}".format(target)
+            call_me[target]="{}".format(re.sub("::","__",target))
 
             for f in funcs[target]:
                 print(target, f)
@@ -1327,9 +1360,10 @@ class CodeCleaner:
                     call_me[target]+=":"
                 else:
                     call_me[target]+=","
-                call_me[target]+=s_name
+                sym_name=demang2mangLUT[s_name]
+                call_me[target]+=sym_name
                 print(s)
-                print("  - STUBNAME: ", self.get_stub_name(s),s_name)
+                print("  - STUBNAME: ", self.get_stub_name(s),s_name,sym_name)
         
             # note from pdr: looks like when data declarations are included, the 
             # function prototype and funcstubs order of symbol definitions 
@@ -1473,6 +1507,7 @@ class CodeCleaner:
         # print(wrapperStub)
 
         # pdr : move this to outside of FOR loop
+        mainStub += "\treturn 0;\n"
         mainStub += "}\n"
 
         return  wrapperStub + "\n\n" + mainStub, call_me
@@ -1486,14 +1521,39 @@ class Formatter:
 
 class GenprogDecomp:
 
-    def __init__(self, target_list_path, scriptpath, ouput_directory,entryfn_prefix):
+    def __init__(self, target_list_path, scriptpath, ouput_directory,entryfn_prefix,r2ghidra=None,strip=False):
         self.target_list_path = target_list_path
         self.scriptpath = scriptpath
         self.ouput_directory = ouput_directory
         self.detour_entry_fn_prefix=entryfn_prefix
+        self.dem2mangLUT=None
+        self.mang2demLUT=None
+        self.r2ghidra_cmd=r2ghidra
+        print(f"Strip Binary = {strip}",flush=True)
+        print(f"Target File = {self.target_list_path}",flush=True)
+        self.strip=strip
+
+    def get_decompilations(self,symlist,binp):
+        syms=" ".join(symlist)
+        cmd=self.r2ghidra_cmd
+        cmd=re.sub("<SYM>",syms,cmd)
+        cmd=re.sub("<BIN>",binp,cmd)
+        d=subprocess.check_output(cmd,shell=True)
+        decomp=d.decode('ascii').rstrip()
+        return decomp
+
+    def get_r2ghidra_out(self,symbol,binp):
+        cmd=self.r2ghidra_cmd
+        cmd=re.sub("<SYM>",symbol,cmd)
+        cmd=re.sub("<BIN>",binp,cmd)
+        d=subprocess.check_output(cmd,shell=True)
+        decomp=d.decode('ascii').rstrip()
+        return decomp
+
 
     def get_symbols(self,binary_path):
         cmd=["/usr/bin/nm",binary_path]
+        #cmd=["/usr/bin/nm","--demangle",binary_path]
         symproc=subprocess.Popen(" ".join(cmd),stdout=subprocess.PIPE,stderr=subprocess.PIPE,shell=True)
         #ret=symproc.poll()
         #if ret == None:
@@ -1515,13 +1575,56 @@ class GenprogDecomp:
             ltype=symbol_dict.get(symtype,None)
             if not ltype:
                 symbol_dict[symtype]=list()
-            symbol_dict[symtype].append({'name':symname,'address':symadd,'type':symtype})
+            cmd=["/usr/bin/c++filt",symname]
+            demangled = subprocess.check_output(" ".join(cmd),shell=True).decode('ascii').rstrip()
+            clean=demangled.split('(',1)[0]
+            symbol_dict[symtype].append({'name':clean,'fullname':demangled,'mangled':symname,'address':symadd,'type':symtype})
+            if not self.mang2demLUT:
+                self.mang2demLUT=dict() 
+            if not self.dem2mangLUT:
+                self.dem2mangLUT=dict()
+            self.mang2demLUT[symname]=(clean,demangled)
+            self.dem2mangLUT[clean]=symname
+        print("Completed get_symbols",flush=True);
         return symbol_dict
 
 
+    def get_target_info(self):
+        self.targets=list()
+        with open(self.target_list_path, "r") as targetFile:
+            for line in targetFile:
+                if len(line)<=0:
+                    continue
+                else:
+                    print(line,flush=True)
+                finalOutput = ""
+                dataMap=dict()
 
+                target, path, funcs = line.rstrip().split(",")
+                target = target.strip()
+                path = path.strip()
+                symbols_lut = self.get_symbols(path)
+                #print(f" => {','.join(self.mang2demLUT.keys())}",flush=True)
+                funcs_=re.sub("::","_____",funcs)
+                funcs_=re.sub(":"," ",funcs_)
+                funcs=re.sub("_____","::",funcs_)
+                # we're now assuming that we're getting mangled symbols as input
+                funcList = funcs.split(" ")
+                print(f"FUNCLIST='{funcList}'",flush=True)
+                for i in funcList:
+                    print(f"{i} ",flush=True)
+                    print(f" => {self.mang2demLUT[i]}",flush=True)
+                detour_funcs= [ (self.mang2demLUT[f],f) for f in funcList ]
+                x={'target':target,'path':path,'funcList':funcList,'detour_funcs':detour_funcs,'symbols_lut':symbols_lut}
+                self.targets.append(x)
+        targetFile.close()
 
-
+    def find_symbol(self,demangled:str):
+        search_re=re.compile(r"\b"+f"{demangled}"+r"\b")
+        for dm in self.dem2mangLUT.keys():
+            if search_re.match(dm):
+                return self.dem2mangLUT[dm]
+        return None
 
     def run(self):
         idaw = IDAWrapper(self.scriptpath)
@@ -1529,284 +1632,316 @@ class GenprogDecomp:
         functions = []
         success = []
         failure = []
-        with open(self.target_list_path, "r") as targetFile:
-            for line in targetFile:
-                if len(line)<=0:
+        for TARG in self.targets:
+            target=TARG['target']
+            path=TARG['path']
+            funcList=TARG['funcList']
+            detour_funcs=[x[0][0] for x in TARG['detour_funcs']]
+            detour_fullfuncs=[x[0][1] for x in TARG['detour_funcs']]
+            detour_syms=[x[1] for x in TARG['detour_funcs']]
+            symbols_lut = TARG['symbols_lut']
+            binpath=path
+            if self.strip:
+               binpath=strip_binary(path) 
+
+            finalOutput = ""
+            dataMap=dict()
+
+            detours_regex="|".join(detour_funcs)
+            while len(detours_regex)>0 and detours_regex[-1]=='|':
+                detours_regex=detours_regex[0:-2]
+            detours_re=re.compile(r"\b("+detours_regex+r")\b")
+            mainFunc = funcList[0].strip()
+
+            print("="*100,flush=True)
+            print("Decompile and Recompiling: %s in target %s" %(str([x for x in detour_funcs]), target),flush=True)
+            print("="*100,flush=True)
+
+            print("    --- Getting typedef mappings...",flush=True)
+            structDump = idaw.get_typedef_mappings(binpath)
+            # print(structDump)
+            typedefLines = cleaner.remove_artifacts(structDump)
+            typedefLines = cleaner.cleanup_typedefs(typedefLines)
+
+            finalOutput += typedefLines
+
+            print("    --- Decompiling target functions...",flush=True)
+            data_symbols = [ x['name'] for s in ['d','D','b','B'] for x in symbols_lut[s] ]
+            fn_symbols = [ x['name'] for s in ['t','T','U','w','W'] for x in symbols_lut[s] ]
+            print("DATA SYMBOLS: {}".format(" ".join(data_symbols)))
+            print("FUNCTION SYMBOLS: {}".format(" ".join(fn_symbols)))
+
+            # void __prd_init() and void __prd_exit() function definitions
+            finalOutput += cleaner.generate_det_placeholders()
+
+            fulldecomp_code=""
+            stubs={'prototypes':list(),'symbols':list(),'external':list(),'nm_names':list()}
+            funcHeaders={'prototypes':list(),'symbols':list(),'external':list(),'nm_names':list()}
+            decls=[[],[],[],[],[],[]]
+            header_decls=decls[0]
+            func_decls=decls[1]
+            data_decls=decls[2]
+            decomp_decls=decls[3]
+            decomp_defs=decls[4]
+            stubs_per_func=dict()
+            funcHeaders_per_func=dict()
+            decomp_per_func=dict()
+            dataMap_per_func=dict()
+            translate_dict=dict()
+            fn_info=dict()
+            data_decls.append("\n//"+"-"*68)
+            data_decls.append(IDA_DATA_START+"\n")
+            func_decls.append("\n//"+"-"*68)
+            func_decls.append(IDA_STUB_START+"\n")
+            decomp_defs.append("\n//"+"-"*68)
+            decomp_defs.append("// Decompiled Functions\n")
+            sym_requirements=dict()
+            dataRemoveList=list()
+
+            #decompFH=open("/tmp/decomp_raw.c","w")
+            for idx,funcsym in enumerate(funcList):
+                func=funcsym
+                if self.mang2demLUT:
+                    func=self.mang2demLUT[funcsym][0]
+                print(f"Processing Function: {func} [symbol = '{funcsym}']")
+                #fname="/tmp/decomp_raw.c."+str(idx)
+                #if os.path.exists(fname):
+                #    decompFH=open(fname,"r")
+                #    decomp_code=decompFH.read()
+                #    decompFH.close()
+                #else:    
+                #    decomp_code = idaw.decompile_func(path, func)
+                #    decompFH=open(fname,"w")
+                #    decompFH.write(decomp_code)
+                #    decompFH.close()
+                decomp_code = idaw.decompile_func(binpath, funcsym)
+                decomp_code = re.sub(r"\bmain\b","patchmain",decomp_code)
+                if func not in fn_symbols:
+                    print(f"{func} not in {fn_symbols}")
+                    print("invalid function symbol, skipping...")
+                    failure.append((target, binpath, funcsym))
                     continue
-                else:
-                    print(line)
-                finalOutput = ""
-                dataMap=dict()
+                print(f"STUBS_PER_FUNC[ID] : ID={detour_funcs[idx]}")
 
-                target, path, funcs = line.rstrip().split(",")
-                target = target.strip()
-                path = path.strip()
-                funcList = funcs.split(":")
-                detour_funcs= [ f.strip() for f in funcList ]
-                detours_regex="|".join(detour_funcs)
-                while detours_regex[-1]=='|':
-                    detours_regex=detours_regex[0:-2]
-                detours_re=re.compile(r"\b("+detours_regex+r")\b")
-                mainFunc = funcList[0].strip()
+                #decompFH.write(decomp_code)
+                stubs_per_func[detour_funcs[idx]]=list()
+                funcHeaders_per_func[detour_funcs[idx]]=dict()
+                if len(decomp_code) <= 0:
+                    print("decompilation error, skipping...")
+                    failure.append((target, binpath, funcsym))
+                    continue
 
-                print("="*100)
-                print("Decompile and Recompiling: %s in target %s" %(str(detour_funcs), target))
-                print("="*100)
+                decomp_code = cleaner.remove_artifacts(decomp_code)
+                print(decomp_code)
 
-                print("    --- Getting typedef mappings...")
-                structDump = idaw.get_typedef_mappings(path)
-                # print(structDump)
-                typedefLines = cleaner.remove_artifacts(structDump)
-                typedefLines = cleaner.cleanup_typedefs(typedefLines)
+                print("    --- Creating stubs...")
+                #      dataMap [per fun] ; dataMap_ [global]
+                #return dataMap, removeList, dataMap_, dataLines_
+                dataMap, dataRemoveList, d, data_decls = cleaner.get_data_declarations(decomp_code,data_symbols,dataMap, data_decls)
+                known_hexray_issue = [ x for x in d['local_vars'] if "dword" in x ]
+                if len(known_hexray_issue)>0:
+                    print(f"KNOWN HEX RAY ISSUE: {known_hexray_issue}")
+                    issue_regex=r"&("+"|".join(known_hexray_issue)+r")\b"
+                    issue_re=re.compile(issue_regex)
+                    if issue_re.search(decomp_code):
+                        # need unstripped binary for input
+                        new_decomp= self.get_r2ghidra_out(funcsym,path)
+                        print(f"r2ghidra decompiled code: {new_decomp}")
+                        print(f"prev decompiled code: {decomp_code}")
+                        decomp_code=re.sub(r"\b__thiscall\n",r"",new_decomp)
+                # d = {'prototypes':dict(),'sym2proto':dict(),'ext_vars':set(),'local_vars':set()} 
+                #data_syms={'ext_var':ext_var_syms,'local_var':local_var_syms}
+                dataMap_per_func[detour_funcs[idx]]=d
+                # stubs are the Function declaration section content [external and local function prototypes]
+                # funcHeaders are the local function definitions
+                stubs, funcHeaders, h, s, f, d, g, translate_dict = cleaner.get_stubs(decomp_code,stubs,funcHeaders,detours_re,decomp_decls,fn_symbols,data_symbols,translate_dict)
+                decomp_per_func[detour_funcs[idx]]=h[d:-1]
+                #return stubs, funcs, fulldecomp, lstubs, lfuncs, fn_start,global_fns
+                header_decls+=h
+                print("DATA REMOVE LIST '{}' => {}".format(func,dataRemoveList))
+                print("GLOBAL DATA MAP '{}' => {}".format(func,dataMap))
+                print("DATA DECLS '{}' => {}".format(func,data_decls))
+                print("FUNCTION DATA MAP '{}' => {}".format(func,d))
+                print("STUB DECLARATIONS '{}' => {}".format(func,stubs['prototypes']))
+                print("NEW STUB DECLARATIONS '{}' => {}".format(func,s['prototypes']))
+                print("NEW FUNCTION DECLARATIONS '{}' => {}".format(func,g))
+                decomp_decls+=g
+                stubs_per_func[detour_funcs[idx]]=s
+                funcHeaders_per_func[detour_funcs[idx]]=f['prototypes']
+                #fulldecomp_code += decomp_code
 
-                finalOutput += typedefLines
+            #decompFH.close()
+            func_decls=stubs['prototypes']
+            #data_decls=[ f for f in funcHeaders if (";" in f and f not in stubs) ] 
+            #data_decls=[ f for f in funcHeaders if (";" in f and f not in stubs) ] 
+            decomp_defs=[]
+            for i in decomp_per_func.keys():
+                decomp_defs.extend(decomp_per_func[i])
+            # print("---- stubs ----")
+            # for s in stubs:
+            #     print(s)
+            # print("---- funcs ----")
+            # for f in funcHeaders:
+            #     print(f)
 
-                print("    --- Decompiling target functions...")
-                symbols_lut = self.get_symbols(path)
-                data_symbols = [ x['name'] for s in ['d','D','b','B'] for x in symbols_lut[s] ]
-                fn_symbols = [ x['name'] for s in ['t','T','U'] for x in symbols_lut[s] ]
-                print("DATA SYMBOLS: {}".format(" ".join(data_symbols)))
+            # let's uniquify the header lines by the set datatype
+            print("\nFUNC_HEADERS:\n{}".format(" -- "+"\n -- ".join(funcHeaders['prototypes'])))
+            print("\nDATA_DECLS:\n{}".format(" -- "+"\n -- ".join(data_decls)))
+            print("\nFUNC_DECLS:\n{}".format(" -- "+"\n -- ".join(func_decls)))
+            print("\nDECOMP_DECLS:\n{}".format(" -- "+"\n -- ".join(decomp_decls)))
+            print("\nDECOMP_DEFS:\n{}".format(" -- "+"\n -- ".join(decomp_defs)))
+            # replacing data declarations with the defines
+            data_decls = cleaner.replace_data_defines_list(data_decls, dataMap, dataRemoveList)
 
-                # void __prd_init() and void __prd_exit() function definitions
-                finalOutput += cleaner.generate_det_placeholders()
-
-                fulldecomp_code=""
-                stubs={'prototypes':list(),'symbols':list(),'external':list(),'nm_names':list()}
-                funcHeaders={'prototypes':list(),'symbols':list(),'external':list(),'nm_names':list()}
-                decls=[[],[],[],[],[],[]]
-                header_decls=decls[0]
-                func_decls=decls[1]
-                data_decls=decls[2]
-                decomp_decls=decls[3]
-                decomp_defs=decls[4]
-                stubs_per_func=dict()
-                funcHeaders_per_func=dict()
-                decomp_per_func=dict()
-                dataMap_per_func=dict()
-                translate_dict=dict()
-                fn_info=dict()
-                data_decls.append("\n//"+"-"*68)
-                data_decls.append(IDA_DATA_START+"\n")
-                func_decls.append("\n//"+"-"*68)
-                func_decls.append(IDA_STUB_START+"\n")
-                decomp_defs.append("\n//"+"-"*68)
-                decomp_defs.append("// Decompiled Functions\n")
-                sym_requirements=dict()
-                dataRemoveList=list()
-
-                #decompFH=open("/tmp/decomp_raw.c","w")
-                for idx,func in enumerate(funcList):
-                    print(f"Processing Function: {func}")
-                    #fname="/tmp/decomp_raw.c."+str(idx)
-                    #if os.path.exists(fname):
-                    #    decompFH=open(fname,"r")
-                    #    decomp_code=decompFH.read()
-                    #    decompFH.close()
-                    #else:    
-                    #    decomp_code = idaw.decompile_func(path, func)
-                    #    decompFH=open(fname,"w")
-                    #    decompFH.write(decomp_code)
-                    #    decompFH.close()
-                    decomp_code = idaw.decompile_func(path, func)
-                    decomp_code = re.sub(r"\bmain\b","patchmain",decomp_code)
-                    if func not in fn_symbols:
-                        print(f"{func} not in {fn_symbols}")
-                        print("invalid function symbol, skipping...")
-                        failure.append((target, path, func))
-                        continue
-
-                    #decompFH.write(decomp_code)
-                    stubs_per_func[detour_funcs[idx]]=list()
-                    funcHeaders_per_func[detour_funcs[idx]]=dict()
-                    if len(decomp_code) <= 0:
-                        print("decompilation error, skipping...")
-                        failure.append((target, path, func))
-                        continue
-
-                    decomp_code = cleaner.remove_artifacts(decomp_code)
-                    print(decomp_code)
-
-                    print("    --- Creating stubs...")
-                    #      dataMap [per fun] ; dataMap_ [global]
-                    #return dataMap, removeList, dataMap_, dataLines_
-                    dataMap, dataRemoveList, d, data_decls = cleaner.get_data_declarations(decomp_code,data_symbols,dataMap, data_decls)
-                    # d = {'prototypes':dict(),'sym2proto':dict(),'ext_vars':set(),'local_vars':set()} 
-                    #data_syms={'ext_var':ext_var_syms,'local_var':local_var_syms}
-                    dataMap_per_func[detour_funcs[idx]]=d
-                    # stubs are the Function declaration section content [external and local function prototypes]
-                    # funcHeaders are the local function definitions
-                    stubs, funcHeaders, h, s, f, d, g, translate_dict = cleaner.get_stubs(decomp_code,stubs,funcHeaders,detours_re,decomp_decls,fn_symbols,data_symbols,translate_dict)
-                    decomp_per_func[detour_funcs[idx]]=h[d:-1]
-                    #return stubs, funcs, fulldecomp, lstubs, lfuncs, fn_start,global_fns
-                    header_decls+=h
-                    print("DATA REMOVE LIST '{}' => {}".format(func,dataRemoveList))
-                    print("GLOBAL DATA MAP '{}' => {}".format(func,dataMap))
-                    print("DATA DECLS '{}' => {}".format(func,data_decls))
-                    print("FUNCTION DATA MAP '{}' => {}".format(func,d))
-                    print("STUB DECLARATIONS '{}' => {}".format(func,stubs['prototypes']))
-                    print("NEW STUB DECLARATIONS '{}' => {}".format(func,s['prototypes']))
-                    print("NEW FUNCTION DECLARATIONS '{}' => {}".format(func,g))
-                    decomp_decls+=g
-                    stubs_per_func[detour_funcs[idx]]=s
-                    funcHeaders_per_func[detour_funcs[idx]]=f['prototypes']
-                    #fulldecomp_code += decomp_code
-
-                #decompFH.close()
-                func_decls=stubs['prototypes']
-                #data_decls=[ f for f in funcHeaders if (";" in f and f not in stubs) ] 
-                #data_decls=[ f for f in funcHeaders if (";" in f and f not in stubs) ] 
-                decomp_defs=[]
-                for i in decomp_per_func.keys():
-                    decomp_defs.extend(decomp_per_func[i])
-                # print("---- stubs ----")
-                # for s in stubs:
-                #     print(s)
-                # print("---- funcs ----")
-                # for f in funcHeaders:
-                #     print(f)
-
-                # let's uniquify the header lines by the set datatype
-                print("\nFUNC_HEADERS:\n{}".format(" -- "+"\n -- ".join(funcHeaders['prototypes'])))
-                print("\nDATA_DECLS:\n{}".format(" -- "+"\n -- ".join(data_decls)))
-                print("\nFUNC_DECLS:\n{}".format(" -- "+"\n -- ".join(func_decls)))
-                print("\nDECOMP_DECLS:\n{}".format(" -- "+"\n -- ".join(decomp_decls)))
-                print("\nDECOMP_DEFS:\n{}".format(" -- "+"\n -- ".join(decomp_defs)))
-                # replacing data declarations with the defines
-                data_decls = cleaner.replace_data_defines_list(data_decls, dataMap, dataRemoveList)
-
-                full_=header_decls[0:6]+["\n","//"+"-"*68,"// Function Declarations","\n"]
-                full_+=func_decls+["\n"]
-                full_+=["\n","//"+'-'*68,"// Decompiled Variables"]+data_decls+["\n"]
-                full_+=["\n","//"+'-'*68,"// Decompiled Function Declarations"]+decomp_decls+["\n"]
-                full_+=["\n","//"+'-'*68,"// Decompiled Function Definitions"]+decomp_defs+["\n"]
-                #finalOutput+="\n\n"+"\n".join(header_decls[0:6]+func_decls+data_decls+decomp_decls)+"\n\n"
-                finalOutput+="\n\n"+"\n".join(full_)+"\n\n"
-                # this following line replaces content in parts of the code we don't want
-                #finalOutput = cleaner.replace_data_defines(finalOutput, dataMap, dataRemoveList)
+            full_=header_decls[0:6]+["\n","//"+"-"*68,"// Function Declarations","\n"]
+            full_+=func_decls+["\n"]
+            full_+=["\n","//"+'-'*68,"// Decompiled Variables"]+data_decls+["\n"]
+            full_+=["\n","//"+'-'*68,"// Decompiled Function Declarations"]+decomp_decls+["\n"]
+            full_+=["\n","//"+'-'*68,"// Decompiled Function Definitions"]+decomp_defs+["\n"]
+            #finalOutput+="\n\n"+"\n".join(header_decls[0:6]+func_decls+data_decls+decomp_decls)+"\n\n"
+            decomp_finalOutput="\n\n"+"\n".join(full_)+"\n\n"
+            # this following line replaces content in parts of the code we don't want
+            #finalOutput = cleaner.replace_data_defines(finalOutput, dataMap, dataRemoveList)
 
 
-                stubMap_=dict()
-                nonCGCList_=dict()
-                updated_stubs,updated_dataMap,nm2decomp_syms=cleaner.resolve_dependencies(stubs_per_func,dataMap_per_func)
+            stubMap_=dict()
+            nonCGCList_=dict()
+            updated_stubs,updated_dataMap,nm2decomp_syms=cleaner.resolve_dependencies(stubs_per_func,dataMap_per_func)
 
-                stubMap, nonCGCList= cleaner.make_pcgc_stubs(stubs, funcHeaders['prototypes'])
-                for f in detour_funcs:
-                    #stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(stubs_per_func[f],funcHeaders_per_func[f])
-                    stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(updated_stubs[f],funcHeaders['prototypes'])
-                # finalOutput = cleaner.remove_nonCGC_calls(finalOutput, nonCGCList)
-                finalOutput = cleaner.replace_stubs(finalOutput, stubMap)
-                # pdr update - let's not rename the functions
-                # finalOutput = cleaner.rename_target(finalOutput, mainFunc)
+            stubMap, nonCGCList= cleaner.make_pcgc_stubs(stubs, funcHeaders['prototypes'])
+            for f in detour_funcs:
+                #stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(stubs_per_func[f],funcHeaders_per_func[f])
+                #print(f"f=>{f}")
+                #print(f"updated_stubs=>{updated_stubs}")
+                #print(f"updated_stubs[f]=>{updated_stubs[f]}")
+                stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(updated_stubs[f],funcHeaders['prototypes'])
+            # finalOutput = cleaner.remove_nonCGC_calls(finalOutput, nonCGCList)
+            decomp_finalOutput = cleaner.replace_stubs(decomp_finalOutput, stubMap)
+            # pdr update - let's not rename the functions
+            # finalOutput = cleaner.rename_target(finalOutput, mainFunc)
                     
 
-                print("    --- Additional cleaning")                
-                finalOutput = cleaner.handle_const_assigns(finalOutput, funcHeaders)
+            print("    --- Additional cleaning")                
+            decomp_finalOutput = cleaner.handle_const_assigns(decomp_finalOutput, funcHeaders)
 
-                print("    --- Generating wrappers...")
-                header = "// Auto-generated code for recompilation of target [%s]\n\n" % target
-                finalOutput = header + finalOutput
-                finalOutput = "#include \"defs.h\"\n" + finalOutput
-                finalOutput = "#include <stddef.h>\n\n" + finalOutput
 
-                # we just don't want mainFunc, we want all detoured functions
-                #footer = cleaner.generate_wrapper(mainFunc, funcHeaders, stubMap, dataMap, self.detour_entry_fn_prefix)
-                #footer,transl_dict = cleaner.generate_wrapper(detour_funcs, funcHeaders, stubMap, dataMap, self.detour_entry_fn_prefix)
-                footer,detfn_defs = cleaner.generate_wrapper(detour_funcs, funcHeaders_per_func, stubMap_, updated_dataMap, self.detour_entry_fn_prefix,translate_dict)
+            print("    --- Generating wrappers...")
+            # we just don't want mainFunc, we want all detoured functions
+            #footer = cleaner.generate_wrapper(mainFunc, funcHeaders, stubMap, dataMap, self.detour_entry_fn_prefix)
+            #footer,transl_dict = cleaner.generate_wrapper(detour_funcs, funcHeaders, stubMap, dataMap, self.detour_entry_fn_prefix)
+            footer,detfn_defs = cleaner.generate_wrapper(detour_funcs, funcHeaders_per_func, stubMap_, updated_dataMap, self.detour_entry_fn_prefix,translate_dict,self.dem2mangLUT)
 
-                finalOutput += footer
+            decomp_finalOutput += footer
 
-                print("Recompilation Complete!")
+            decomp_finalOutput = re.sub("::","__",decomp_finalOutput)
 
-                outdir = os.path.join(self.ouput_directory, target)
-                if not os.path.exists(outdir):
-                    os.makedirs(outdir)
+            header = "#include \"defs.h\"\n#include <stddef.h>\n\n"
+            header += "// Auto-generated code for recompilation of target [%s]\n\n" % target
+            finalOutput = header + finalOutput + decomp_finalOutput
+            if self.strip:
+                finalOutput=cleaner.transform_cpp(finalOutput)
 
-                print("\nWriting to ", outdir)
 
-                outpath = os.path.join(self.ouput_directory, target, target+"_recomp.c")
-                with open(outpath, "w") as outFile:
-                    outFile.write(finalOutput)
-                outFile.close()
-                success.append((target, path, funcList))
+            print("Recompilation Complete!")
 
-                #funcStubline = ""
-                #for stubLine in stubMap.keys():
-                #    stubName = cleaner.get_stub_name(stubLine)
-                #    funcStubline += stubName +","
-                #
-                #for dataStub in dataMap.values():
-                #    # IPython.embed()
-                #    dataDef = dataStub.split("\n")[1]
-                #    dataName = dataDef[8:].split(maxsplit=1)[0]
-                #    funcStubline += dataName +","
-                #funcStubline = funcStubline.strip(",")
-                funcStubs = [f for f in detfn_defs.values()]
-                funcStubline = re.sub('\[\d*\]',""," ".join(funcStubs))
-                detours = []
-                for i in detfn_defs.keys():
-                    di=i
-                    define=di
-                    if self.detour_entry_fn_prefix:
-                        di="{}{}".format(self.detour_entry_fn_prefix,i)
-                        define="{}:{}".format(di,i)
-                    elif i=="main":
-                        di="patchmain"
-                        define="{}:{}".format(di,i)
+            outdir = os.path.join(self.ouput_directory, target)
+            if not os.path.exists(outdir):
+                os.makedirs(outdir)
 
-                    if i=="main":
-                        define+="+7"
-                    detours.append(define)
+            print("\nWriting to ", outdir)
                 
-                #detour_list=[ str(f+":"+self.detour_entry_fn_prefix+f) for f in detour_funcs ]
-                makefile_dict={
-                "BIN":target,
-                "MYSRC":target+"_recomp.c",
-                "MYREP":"repair.c",
-                "DETOUR_PREFIX":self.detour_entry_fn_prefix,
-                "DETOURS":detours,
-                #"FUNCSTUB_LIST":[ "{}:{}".format(f,funcStubline) for f in detour_funcs ]
-                "FUNCSTUB_LIST": detfn_defs
-                }
-                # pdr: should really put this in in a separate configuration parsing 
-                #      and generation script/program
-                makefile_target_info = "# Auto-generated Makefile include file\n"  + \
-                              "BIN := " + target + "\n" + \
-                              "DETOUR_BIN ?= $(BIN).trampoline.bin\n" + \
-                              "MYSRC ?= " + target+"_recomp.c" + "\n" + \
-                              "MYREP ?= " + "repair.c" + "\n" + \
-                              "DETOUR_PREFIX := " + self.detour_entry_fn_prefix + "\n" + \
-                              "DETOUR_DEFS := " + funcStubline + "\n" + \
-                              "DETOUR_CALLS := $(patsubst %, --external-funcs $(DETOUR_PREFIX)%, $(DETOUR_DEFS))\n" + \
-                              "DETOURS := " + " ".join(detours) + "\n" + \
-                              "FUNCINSERT_PARAMS := $(DETOURS) $(DETOUR_CALLS) --debug \n" 
-                              #"FUNCINSERT_PARAMS := --detour-prefix $(DETOUR_PREFIX) $(DETOURS)\n" 
+            outpath = os.path.join(self.ouput_directory, target, target+"_recomp.c")
+            with open(outpath, "w") as outFile:
+                outFile.write(finalOutput)
+            outFile.close()
+            success.append((target, binpath, funcList))
 
-                #newfuncStubline = ""
-                #for f in detour_funcs:
-                #    newfuncStubline += f+":"+funcStubline+"\n"
-                #funcStubline = newfuncStubline
-                print("FUNC_STUBS:\n"+funcStubline)
-                outpath = os.path.join(self.ouput_directory, target, target+"_funcstubs")
-                makefile_include_outpath = os.path.join(self.ouput_directory, target, "prd_include.mk")
-                json_outpath = os.path.join(self.ouput_directory, target, "prd_info.json")
-                with open(makefile_include_outpath, "w") as outFile:
-                    outFile.write(makefile_target_info)
-                outFile.close()
-                with open(outpath, "w") as outFile:
-                    outFile.write(funcStubline)
-                outFile.close()
-                import json
-                with open(json_outpath, 'w') as outFile:
-                    json.dump(makefile_dict,outFile)
-                outFile.close()
+            #funcStubline = ""
+            #for stubLine in stubMap.keys():
+            #    stubName = cleaner.get_stub_name(stubLine)
+            #    funcStubline += stubName +","
+            #
+            #for dataStub in dataMap.values():
+            #    # IPython.embed()
+            #    dataDef = dataStub.split("\n")[1]
+            #    dataName = dataDef[8:].split(maxsplit=1)[0]
+            #    funcStubline += dataName +","
+            #funcStubline = funcStubline.strip(",")
+            funcStubs = [f for f in detfn_defs.values()]
+            print(f"funcStubs: {funcStubs}")
+            funcStubline = re.sub('\[\d*\]',""," ".join(funcStubs))
+            print(f"funcStubline: {funcStubline}")
+            detours = []
+            for i in detfn_defs.keys():
+                di=re.sub("::","__",i)
+                sym_i=self.dem2mangLUT[i]
+                define=f"{di}:{sym_i}"
+                if self.detour_entry_fn_prefix:
+                    di="{}{}".format(self.detour_entry_fn_prefix,i)
+                    di=re.sub("::","__",di)
+                    define="{}:{}".format(di,sym_i)
+                elif i=="main":
+                    di="patchmain"
+                    define="{}:{}".format(di,sym_i)
 
-                print("="*100)
+                if i=="main":
+                    define+="+7"
+                detours.append(define)
 
-                shutil.copyfile(DEFS_PATH, os.path.join(outdir, "defs.h"))
+            #detour_list=[ str(f+":"+self.detour_entry_fn_prefix+f) for f in detour_funcs ]
+            makefile_dict={
+            "BIN":target,
+            "MYSRC":target+"_recomp.c",
+            "MYREP":"repair.c",
+            "DETOUR_PREFIX":self.detour_entry_fn_prefix,
+            "DETOURS":detours,
+            #"FUNCSTUB_LIST":[ "{}:{}".format(f,funcStubline) for f in detour_funcs ]
+            "FUNCSTUB_LIST": detfn_defs
+            }
+            # pdr: should really put this in in a separate configuration parsing 
+            #      and generation script/program
 
-                # break
-                # mappings = idaw.get_typedef_mappings(path)
-        targetFile.close()
+            makefile_target_info = "# Auto-generated Makefile include file\n"  + \
+                          "BIN := " + target + "\n" + \
+                          "DETOUR_BIN ?= $(BIN).trampoline.bin\n" + \
+                          "MYSRC ?= " + target+"_recomp.c" + "\n" + \
+                          "MYREP ?= " + "repair.c" + "\n" + \
+                          "DETOUR_PREFIX := " + self.detour_entry_fn_prefix + "\n" + \
+                          "DETOUR_DEFS := " + funcStubline + "\n" + \
+                          "DETOUR_CALLS := $(patsubst %, --external-funcs $(DETOUR_PREFIX)%, $(DETOUR_DEFS))\n" + \
+                          "DETOURS := " + " ".join(detours) + "\n" + \
+                          "FUNCINSERT_PARAMS := $(DETOURS) $(DETOUR_CALLS) --debug \n" 
+                          #"FUNCINSERT_PARAMS := --detour-prefix $(DETOUR_PREFIX) $(DETOURS)\n" 
+            #if self.strip:
+            #    makefile_target_info += "\n## Symbols are mangled, indicating CPP code.\n"+\
+            #              "# overriding DIET_GCC to be diet_g++ script\n"+\
+            #              "DIET_GCC?=${DIET32PATH}/diet_g++\n"
+
+            #newfuncStubline = ""
+            #for f in detour_funcs:
+            #    newfuncStubline += f+":"+funcStubline+"\n"
+            #funcStubline = newfuncStubline
+            print("FUNC_STUBS:\n"+funcStubline)
+            outpath = os.path.join(self.ouput_directory, target, target+"_funcstubs")
+            makefile_include_outpath = os.path.join(self.ouput_directory, target, "prd_include.mk")
+            json_outpath = os.path.join(self.ouput_directory, target, "prd_info.json")
+            with open(makefile_include_outpath, "w") as outFile:
+                outFile.write(makefile_target_info)
+            outFile.close()
+            with open(outpath, "w") as outFile:
+                outFile.write(funcStubline)
+            outFile.close()
+            import json
+            with open(json_outpath, 'w') as outFile:
+                json.dump(makefile_dict,outFile)
+            outFile.close()
+
+            print("="*100)
+
+            shutil.copyfile(DEFS_PATH, os.path.join(outdir, "defs.h"))
+
+            # break
+            # mappings = idaw.get_typedef_mappings(path)
 
         print(" ALL TARGETS COMPLETE")
         print(" --- %d binaries successesful recompiled" % len(success))
@@ -1830,13 +1965,19 @@ def main():
                         help='Detour prefix to append to detour entry function')
     parser.add_argument('target_list',
                         help='path to the list of target binaries + paths')
+    parser.add_argument("--strip-binary",dest='strip',default=False,
+                        action='store_const',const=True,
+                        help='get decompiled output from stripped version of binary')
     parser.add_argument('ouput_directory',
                         help='path to output directory')
     parser.add_argument('--scriptpath', default="get_ida_details.py",
                     help='path to idascript')
+    parser.add_argument('--r2ghidra', dest='r2',default=None,
+                    help='r2ghidra command line <SYM> is symbol to decompile, <C_OUT> is decompile out file')
 
     args, unknownargs = parser.parse_known_args()
-    gpd = GenprogDecomp(args.target_list, args.scriptpath, args.ouput_directory,args.detfn_prefix)
+    gpd = GenprogDecomp(args.target_list, args.scriptpath, args.ouput_directory,args.detfn_prefix,args.r2,args.strip)
+    gpd.get_target_info()
     gpd.run()
 
 main()

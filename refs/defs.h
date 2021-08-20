@@ -13,3 +13,6 @@
 #define _OWORD (unsigned long long)
 
 #define __short short
+
+#define int32_t intptr_t
+#define uint32_t intptr_t
