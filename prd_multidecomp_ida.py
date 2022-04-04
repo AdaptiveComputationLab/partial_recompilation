@@ -58,31 +58,38 @@ class IDAWrapper:
         self.typedefScriptPath = typedefScriptPath
 
     # get initial decompiled output of ida hexrays
-    def decompile_func(self, binary_path, func:str):
+    def decompile_func(self, binary_path, func:str, decompdir:str):
         outname = "/tmp/"+func.strip()
+        decompf=f"{decompdir}/{func.strip()}.c"
         #for func_name in func_list:
         #    funcs += func_name.strip() + ":"
         #funcs = funcs[:-1] #trim dangling ':'
 
         # ida run command
-        ida_command = [IDA_PATH, "-Ohexrays:-nosave:"+outname+":"+func, "-A", binary_path]
-        print("Running: ", " ".join(ida_command),flush=True)
-        subprocess.run(ida_command)
-
         functionLines = ""
-        if not os.path.exists(outname+".c"):
-            print("    !!! ERROR DECOMPILING FILE", outname+".c")
-            return ""
+        if not os.path.exists(decompf) or (os.stat(decompf).st_size==0):
+            ida_command = [IDA_PATH, "-Ohexrays:-nosave:"+outname+":"+func, "-A", binary_path]
+            print("Running: ", " ".join(ida_command),flush=True)
+            subprocess.run(ida_command)
+    
+            if not os.path.exists(outname+".c"):
+                print("    !!! ERROR DECOMPILING FILE", outname+".c")
+                return ""
+    
+            with open(f"{outname}.c", "r") as decompFile:
+                functionLines = decompFile.read()
+            decompFile.close()
+            shutil.copyfile(f"{outname}.c",decompf)
+            os.remove(f"{outname}.c")
+            # print("="*30, "DECOMPILATION OUTPUT", "="*30)
+            # print(functionLines)
+            # print("="*70)
+            print("[COMPLETED] Running: ", " ".join(ida_command))
+        else:
+            with open(decompf, "r") as decompFile:
+                functionLines = decompFile.read()
+                decompFile.close()
 
-        with open(outname+".c", "r") as decompFile:
-            functionLines = decompFile.read()
-        decompFile.close()
-        os.remove(outname+".c")
-
-        # print("="*30, "DECOMPILATION OUTPUT", "="*30)
-        # print(functionLines)
-        # print("="*70)
-        print("[COMPLETED] Running: ", " ".join(ida_command))
 
         return functionLines
     # get initial decompiled output of ida hexrays
@@ -121,22 +128,33 @@ class IDAWrapper:
     # # given a decompiled ida string, find all func calls in that string
 
     # get all typedef mappings
-    def get_typedef_mappings(self, binary_path):
+    def get_typedef_mappings(self, binary_path,output):
         typedefMap = dict()
-        ida_command = [IDA_PATH, '-B', '-S'+"\""+self.typedefScriptPath+"\"", "-A", binary_path]
-        tmpName = ""
-        with tempfile.NamedTemporaryFile(mode="r", dir="/tmp", prefix="prd-ida-",delete=True) as tmpFile:
-            print("RUNNING: ", " ".join(ida_command),flush=True)
-            env = os.environ
-            env["IDALOG"] = tmpFile.name
-            sp = subprocess.run(ida_command, env=env)
+        typedef_f=f"{output}/typedefs.h"
+        typedefs=None
+        if not os.path.exists(typedef_f) or (os.stat(typedef_f).st_size==0):
+            ida_command = [IDA_PATH, '-B', '-S'+"\""+self.typedefScriptPath+"\"", "-A", binary_path]
+            tmpName = ""
+            with tempfile.NamedTemporaryFile(mode="r", dir="/tmp", prefix="prd-ida-",delete=True) as tmpFile:
+                print("RUNNING: ", " ".join(ida_command),flush=True)
+                env = os.environ
+                env["IDALOG"] = tmpFile.name
+                sp = subprocess.run(ida_command, env=env)
 
-            typedefs = tmpFile.read()
-            tmpName = tmpFile.name
-            print("    -> Temp File Name:", tmpName,flush=True)
+                typedefs = tmpFile.read()
+                with open(typedef_f,"w") as typedfh:
+                    typedfh.write(typedefs)
+                    
+                tmpName = tmpFile.name
+                print("    -> Temp File Name:", tmpName,flush=True)
 
-        tmpFile.close()
+            tmpFile.close()
         
+        else:
+            with open(typedef_f,"r") as tmpFile:
+                typedefs = tmpFile.read()
+                tmpFile.close()
+            
         structDump = ""
         latch = False
         for line in typedefs.splitlines():
@@ -165,9 +183,18 @@ class CodeCleaner:
 
         elif fn_ptr:
             htype = "void *"
-            func_ptr_name=re.match("\w+\s+\(\*(\w+)\)",header)
-            print("DEBUG : getTypeAndLabel {} => {}".format(header,func_ptr_name.group(1)))
-            return htype,func_ptr_name.group(1)
+            func_ptr_name=re.match("(\w+\s+)+\(\*(\w+)\)",header)
+            if func_ptr_name:
+                print("DEBUG : getTypeAndLabel {} => {}".format(header,func_ptr_name.group(1)))
+                return htype,func_ptr_name.group(1)
+            func_ptr_name=re.match("(\w+\s+)+\*\s*\(\*(\w+)\)",header)
+            if func_ptr_name:
+                print("DEBUG : getTypeAndLabel {} => {}".format(header,func_ptr_name.group(1)))
+                return htype,func_ptr_name.group(1)
+            else:
+                print("FAILURE : getTypeAndLabel {} ".format(header))
+                assert(False)
+                
 
         else:
             array = header.rsplit(maxsplit=1)
@@ -489,8 +516,8 @@ class CodeCleaner:
         if key in waitingStructs.keys():
             return True
         elif key in typeDefMap.keys():
-            print("   ## Recursing", key, "->", newKey)
             newKey = typeDefMap[key]
+            print("   ## Recursing", key, "->", newKey)
             return self.recursive_dep_check(typeDefMap, waitingStructs, newKey)
         return False
 
@@ -695,6 +722,7 @@ class CodeCleaner:
 
             line = line.replace("bool", "_Bool")
             line = line.replace("_Bool", "_BoolDef") # TODO: dont use this dumbass workaround
+            line = line.replace("_BoolDef", "bool")
 
             line = line.replace("_DWORD", "int")
             line = line.replace("_WORD", "short")
@@ -859,29 +887,31 @@ class CodeCleaner:
 
         #print(f"fn_list : {fn_list}")
         for i in fn_list:
-            print(f"->{i}")
             j=stubs_per_func[i]
-            nms=j['nm_names']
-            syms=j['symbols']
-            for k in range(0,len(syms)):
-                x=nm_to_decomp.get(nms[k],None)
-                if not x:
-                    nm_to_decomp[nms[k]]=set([syms[k]])
-                else:
-                    nm_to_decomp[nms[k]].add(syms[k])
-            j=dataMap_per_func[i]
-            prot=j['prototypes']
-            for k in prot.keys():
-                x=global_proto_var.get(k,None)
-                if not x:
-                    global_proto_var[k]=prot[k]
-            #syms=j['sym2proto']
-            #for k in syms.keys():
-            #    x=symvar_to_proto.get(k,None)
-            #    if not x:
-            #        symvar_to_proto[k]=set([syms[k]])
-            #    else:
-            #        symvar_to_proto[k].add(syms[k])
+            if not isinstance(j,dict):
+                print(f"Warning: Function {i} does not have symbols or names from nm")
+            else:
+                nms=j['nm_names']
+                syms=j['symbols']
+                for k in range(0,len(syms)):
+                    x=nm_to_decomp.get(nms[k],None)
+                    if not x:
+                        nm_to_decomp[nms[k]]=set([syms[k]])
+                    else:
+                        nm_to_decomp[nms[k]].add(syms[k])
+                j=dataMap_per_func[i]
+                prot=j['prototypes']
+                for k in prot.keys():
+                    x=global_proto_var.get(k,None)
+                    if not x:
+                        global_proto_var[k]=prot[k]
+                #syms=j['sym2proto']
+                #for k in syms.keys():
+                #    x=symvar_to_proto.get(k,None)
+                #    if not x:
+                #        symvar_to_proto[k]=set([syms[k]])
+                #    else:
+                #        symvar_to_proto[k].add(syms[k])
                     
         resolved=set()
         ext_varprotos=dict()
@@ -1212,12 +1242,25 @@ class CodeCleaner:
     def replace_data_defines_list(self, output, dataMap, removeList):
         for data, replacement in dataMap.items():
             print("   ---> Replacing [[%s]] with [[%s]]" %(data, replacement))
-            for i in range(0,len(output)):
-                output[i] = output[i].replace(data, replacement)
+            if '\n' not in data:
+                for i in range(0,len(output)):
+                    output[i] = output[i].replace(data, replacement)
+            else:
+                x=data.split('\n')
+                for i in range(0,len(output)):
+                    if output[i].startswith(x[0]):
+                        swap=len(x)
+                        output[i]=replacement+"\n /*"+output[i];
+                        output[i+swap-1]+="*/";
         for target in removeList:
             for i in range(0,len(output)):
                 output[i] = output[i].replace(target, "")
         return output
+
+    def transform_std(self,decomp):
+        d=re.sub(r"(\S+)::\$?([_\S]+)",r"\1___\2",decomp)
+        d=re.sub(r"(\S+)::\$?([_\S]+)",r"\1___\2",d)
+        return d
 
     def transform_cpp(self,decomp):
         # s/_cppobj //g
@@ -1229,6 +1272,8 @@ class CodeCleaner:
         d=re.sub(r"(\S+)<(\S+)*>",r"\1_\2_p_",d)
         # s/(\w+)::(\w+)/${1}___${2}/g
         d=re.sub(r"(\S+)<(\S+)>",r"\1_\2_",d)
+        # let's get rid of ::$[0-9a-fA-F]
+
         return d
 
 
@@ -1275,7 +1320,7 @@ class CodeCleaner:
             #if target == "main":
             #    #translation_dict["main"]="patchmain"
             #    detour_target="{}{}".format(detour_prefix,"patchmain")
-            mainStub += "\t%s(\n" % detour_target
+            mainStub += f"\t{detour_target}(\n" 
             print("Detour target: {}:{} => {} ".format(ltarget,trans_targ,detour_target))
 
             args = []
@@ -1368,7 +1413,9 @@ class CodeCleaner:
             # note from pdr: looks like when data declarations are included, the 
             # function prototype and funcstubs order of symbol definitions 
             # are not consistent
+            ZERO_PARAMS=True
             for d in dataMap[target].keys():
+                ZERO_PARAMS=False
                 print("data", d)
                 mainStub +=  "\t\tNULL,\n"
                 dataDef = d.split(";")[0]
@@ -1396,6 +1443,7 @@ class CodeCleaner:
                 print("   - DATA DECL: ", dataName)
 
             for argTuple in args:
+                ZERO_PARAMS=False
                 argType = argTuple[0]
                 argName = argTuple[1]
                 if "double" in argType or "float" in argType or "int" in argType:
@@ -1404,7 +1452,7 @@ class CodeCleaner:
                     mainStub += "\t\t(%s) NULL,\n"  % argType
                 wrapperStub += "\t%s %s,\n" % (argType, argName)
 
-            if stubMap or args: # list not empty
+            if not ZERO_PARAMS:
                 mainStub = mainStub[:-2]  #strip ,\n
                 wrapperStub = wrapperStub[:-2]  #strip ,\n
 
@@ -1415,7 +1463,7 @@ class CodeCleaner:
             wrapperStub += "\n)\n{\n"
     
             # create ret variable if needed
-            if targetRetType != "void":
+            if targetRetType != "void" and targetRetType != "void __noreturn":
                 wrapperStub += "\n\t%s retValue;\n\n" % targetRetType
     
             # body
@@ -1453,7 +1501,7 @@ class CodeCleaner:
     
             wrapperStub += "\t"
     
-            if targetRetType != "void":
+            if targetRetType != "void" and targetRetType != "void __noreturn":
                 wrapperStub += "retValue = "
     
             # call target:
@@ -1496,7 +1544,7 @@ class CodeCleaner:
     
             # ret and close
             wrapperStub += "\n\treturn"
-            if targetRetType != "void":
+            if targetRetType != "void" and targetRetType != "void __noreturn":
                 wrapperStub += " retValue"
             wrapperStub += ";\n}\n\n"
 
@@ -1521,10 +1569,11 @@ class Formatter:
 
 class GenprogDecomp:
 
-    def __init__(self, target_list_path, scriptpath, ouput_directory,entryfn_prefix,r2ghidra=None,strip=False):
+    def __init__(self, target_list_path, scriptpath, ouput_directory,entryfn_prefix,r2ghidra=None,strip=False,decompdir="/tmp/decomp"):
         self.target_list_path = target_list_path
         self.scriptpath = scriptpath
         self.ouput_directory = ouput_directory
+        self.decompdir = os.path.abspath(decompdir)
         self.detour_entry_fn_prefix=entryfn_prefix
         self.dem2mangLUT=None
         self.mang2demLUT=None
@@ -1542,12 +1591,22 @@ class GenprogDecomp:
         decomp=d.decode('ascii').rstrip()
         return decomp
 
-    def get_r2ghidra_out(self,symbol,binp):
-        cmd=self.r2ghidra_cmd
-        cmd=re.sub("<SYM>",symbol,cmd)
-        cmd=re.sub("<BIN>",binp,cmd)
-        d=subprocess.check_output(cmd,shell=True)
-        decomp=d.decode('ascii').rstrip()
+    def get_r2ghidra_out(self,symbol,binp,decompdir:str):
+        decompf=f"{decompdir}/{symbol.strip()}-ghidra.c"
+        decomp=None
+        if not os.path.exists(decompf) or (os.stat(decompf).st_size==0):
+            cmd=self.r2ghidra_cmd
+            cmd=re.sub("<SYM>",symbol,cmd)
+            cmd=re.sub("<BIN>",binp,cmd)
+            d=subprocess.check_output(cmd,shell=True)
+            decomp=d.decode('ascii').rstrip()
+            with open(decompf, "w") as decompFile:
+                decompFile.write(decomp)
+                decompFile.close()
+        else:
+            with open(decompf, "r") as decompFile:
+                decomp = decompFile.read()
+                decompFile.close()
         return decomp
 
 
@@ -1563,15 +1622,21 @@ class GenprogDecomp:
         sout,serr = symproc.communicate()
         output=sout.decode('ISO-8859-1')
         lines=output.split('\n')
-        print(lines[0])
         symbol_dict = dict()
+        count=0;MAX=len(lines)
         for x in lines:
-            if len(x)<1:
-                print(x)
+            if (count==len(lines) or (count%int(MAX/10))==0):
+                print(f"{count}/{len(lines)} completed")
+            count+=1
+            if len(x)<12:
+                #print(x)
                 continue
             symadd=x[0:8]
             symtype=x[9:10]
             symname=x[11:len(x)]
+            if x[8]!=" ":
+                print("ERROR!! Looks like a 64b binary\nExiting.")
+                import sys;sys.exit(-1)
             ltype=symbol_dict.get(symtype,None)
             if not ltype:
                 symbol_dict[symtype]=list()
@@ -1587,7 +1652,6 @@ class GenprogDecomp:
             self.dem2mangLUT[clean]=symname
         print("Completed get_symbols",flush=True);
         return symbol_dict
-
 
     def get_target_info(self):
         self.targets=list()
@@ -1632,6 +1696,7 @@ class GenprogDecomp:
         functions = []
         success = []
         failure = []
+        decomp_failure_count=0
         for TARG in self.targets:
             target=TARG['target']
             path=TARG['path']
@@ -1641,8 +1706,16 @@ class GenprogDecomp:
             detour_syms=[x[1] for x in TARG['detour_funcs']]
             symbols_lut = TARG['symbols_lut']
             binpath=path
+            decompile_error_count=0
             if self.strip:
                binpath=strip_binary(path) 
+
+            outdir = os.path.join(self.ouput_directory, target)
+            decompdir = os.path.join(self.decompdir, target)
+            if not os.path.exists(outdir):
+                os.makedirs(outdir)
+            if not os.path.exists(decompdir):
+                os.makedirs(decompdir)
 
             finalOutput = ""
             dataMap=dict()
@@ -1658,7 +1731,7 @@ class GenprogDecomp:
             print("="*100,flush=True)
 
             print("    --- Getting typedef mappings...",flush=True)
-            structDump = idaw.get_typedef_mappings(binpath)
+            structDump = idaw.get_typedef_mappings(binpath,decompdir)
             # print(structDump)
             typedefLines = cleaner.remove_artifacts(structDump)
             typedefLines = cleaner.cleanup_typedefs(typedefLines)
@@ -1714,7 +1787,7 @@ class GenprogDecomp:
                 #    decompFH=open(fname,"w")
                 #    decompFH.write(decomp_code)
                 #    decompFH.close()
-                decomp_code = idaw.decompile_func(binpath, funcsym)
+                decomp_code = idaw.decompile_func(binpath, funcsym,decompdir)
                 decomp_code = re.sub(r"\bmain\b","patchmain",decomp_code)
                 if func not in fn_symbols:
                     print(f"{func} not in {fn_symbols}")
@@ -1724,11 +1797,11 @@ class GenprogDecomp:
                 print(f"STUBS_PER_FUNC[ID] : ID={detour_funcs[idx]}")
 
                 #decompFH.write(decomp_code)
-                stubs_per_func[detour_funcs[idx]]=list()
+                stubs_per_func[detour_funcs[idx]]=dict()
                 funcHeaders_per_func[detour_funcs[idx]]=dict()
                 if len(decomp_code) <= 0:
                     print("decompilation error, skipping...")
-                    failure.append((target, binpath, funcsym))
+                    decompile_error_count+=1;failure.append((target, binpath, funcsym))
                     continue
 
                 decomp_code = cleaner.remove_artifacts(decomp_code)
@@ -1739,13 +1812,14 @@ class GenprogDecomp:
                 #return dataMap, removeList, dataMap_, dataLines_
                 dataMap, dataRemoveList, d, data_decls = cleaner.get_data_declarations(decomp_code,data_symbols,dataMap, data_decls)
                 known_hexray_issue = [ x for x in d['local_vars'] if "dword" in x ]
-                if len(known_hexray_issue)>0:
+                #if len(known_hexray_issue)>0 and self.r2ghidra_cmd:
+                if self.r2ghidra_cmd:
                     print(f"KNOWN HEX RAY ISSUE: {known_hexray_issue}")
                     issue_regex=r"&("+"|".join(known_hexray_issue)+r")\b"
                     issue_re=re.compile(issue_regex)
                     if issue_re.search(decomp_code):
                         # need unstripped binary for input
-                        new_decomp= self.get_r2ghidra_out(funcsym,path)
+                        new_decomp= self.get_r2ghidra_out(funcsym,path,decompdir)
                         print(f"r2ghidra decompiled code: {new_decomp}")
                         print(f"prev decompiled code: {decomp_code}")
                         decomp_code=re.sub(r"\b__thiscall\n",r"",new_decomp)
@@ -1765,6 +1839,7 @@ class GenprogDecomp:
                 print("STUB DECLARATIONS '{}' => {}".format(func,stubs['prototypes']))
                 print("NEW STUB DECLARATIONS '{}' => {}".format(func,s['prototypes']))
                 print("NEW FUNCTION DECLARATIONS '{}' => {}".format(func,g))
+                print(f"DETOUR FUNCS 'detour_funcs[{idx}]' => '{detour_funcs[idx]}'")
                 decomp_decls+=g
                 stubs_per_func[detour_funcs[idx]]=s
                 funcHeaders_per_func[detour_funcs[idx]]=f['prototypes']
@@ -1784,6 +1859,9 @@ class GenprogDecomp:
             # for f in funcHeaders:
             #     print(f)
 
+            if decompile_error_count == len(funcList):
+                decomp_failure_count+=1
+                continue
             # let's uniquify the header lines by the set datatype
             print("\nFUNC_HEADERS:\n{}".format(" -- "+"\n -- ".join(funcHeaders['prototypes'])))
             print("\nDATA_DECLS:\n{}".format(" -- "+"\n -- ".join(data_decls)))
@@ -1835,18 +1913,16 @@ class GenprogDecomp:
 
             decomp_finalOutput = re.sub("::","__",decomp_finalOutput)
 
-            header = "#include \"defs.h\"\n#include <stddef.h>\n\n"
+            header = "#include \"defs.h\"\n#include <stddef.h>\n#include <stdbool.h>\n\n"
             header += "// Auto-generated code for recompilation of target [%s]\n\n" % target
             finalOutput = header + finalOutput + decomp_finalOutput
             if self.strip:
                 finalOutput=cleaner.transform_cpp(finalOutput)
+            else:
+                finalOutput=cleaner.transform_std(finalOutput)
 
 
             print("Recompilation Complete!")
-
-            outdir = os.path.join(self.ouput_directory, target)
-            if not os.path.exists(outdir):
-                os.makedirs(outdir)
 
             print("\nWriting to ", outdir)
                 
@@ -1951,6 +2027,8 @@ class GenprogDecomp:
         for f in failure:
             print("     - ", f)
         print("="*100)
+        if decomp_failure_count>0:
+            import sys;sys.exit(-1)
 
 
 
@@ -1961,6 +2039,8 @@ def main():
         import sys
         sys.exit(-1)
     parser = argparse.ArgumentParser(description='')
+    parser.add_argument('--decompdir',dest='decompdir',default="/tmp/decomp",action='store',
+                        help='path to store raw decompiled content')
     parser.add_argument('--detour-prefix',dest='detfn_prefix',action='store',default="det_",
                         help='Detour prefix to append to detour entry function')
     parser.add_argument('target_list',
@@ -1976,7 +2056,8 @@ def main():
                     help='r2ghidra command line <SYM> is symbol to decompile, <C_OUT> is decompile out file')
 
     args, unknownargs = parser.parse_known_args()
-    gpd = GenprogDecomp(args.target_list, args.scriptpath, args.ouput_directory,args.detfn_prefix,args.r2,args.strip)
+    os.makedirs(args.decompdir) # make sure that the decomp dir exists before using it
+    gpd = GenprogDecomp(args.target_list, args.scriptpath, args.ouput_directory,args.detfn_prefix,args.r2,args.strip,args.decompdir)
     gpd.get_target_info()
     gpd.run()
 
