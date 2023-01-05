@@ -20,9 +20,6 @@
 
 #define __short short
 
-#define int32_t intptr_t
-#define uint32_t intptr_t
-
 typedef char int8;
 typedef short int16;
 typedef int int32;
@@ -36,3 +33,25 @@ typedef int32 _BOOL4;
 #else
 #define __noreturn __declspec(noreturn)
 #endif
+
+
+// workaround for dietlibc inclusion issue with including wchar.h
+#include <stdio.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#define int32_t intptr_t
+#define uint32_t intptr_t
+
+
+#if defined(__WINT_TYPE__)
+typedef __WINT_TYPE__ wint_t;
+#else
+typedef unsigned int wint_t;
+#endif
+
+typedef struct {
+  int count;
+  wchar_t sofar;
+} mbstate_t;
+
