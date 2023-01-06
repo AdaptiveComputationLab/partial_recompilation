@@ -61,7 +61,7 @@ CHDR_TYPES=[
 TYPES_REQUIRING_STDIO=['FILE']
 
 DIETLIBC_TYPES=[
-    'uint32_t','int32_t'
+    'uint32_t','int32_t','uint8_t','int8_t','uint16_t','int16_t'
 ]
 
 STD_HEADER_TYPES=TYPES_REQUIRING_STDIO+CHDR_TYPES+DIETLIBC_TYPES
@@ -974,6 +974,9 @@ class CodeCleaner:
                     idx=inline_def.index(True)
                     _ltype['storage']=prefixes[idx].strip()
                     base_type=req_type
+                elif base_type in enum_types:
+                    t=re.sub(r"\btypedef\b",f"typedef enum",t)
+
                 elif base_type in collective_types:
                     ref_line=type_to_dependencies[base_type]['line']
                     ref_stor=type_to_dependencies[base_type]['storage']
@@ -1155,7 +1158,7 @@ class CodeCleaner:
         #       which allows for forward declaration use in the case of circular references in type definitions
         #      => i.e., when another struct or a function pointer has a field that's a struct/union
         #               without 'struct|union' keyword, prepend it to the field
-        #  4) similar to 3, but when a simple typedef references a struct or union type without that keyword, prepend it
+        #  4) similar to 3, but when a simple typedef references a enum, struct or union type without that keyword, prepend it
         for i in list(type_to_dependencies.keys()):
             line=type_to_dependencies[i]['line']
             reqs=type_to_dependencies[i]['reqs']
@@ -1237,6 +1240,10 @@ class CodeCleaner:
                             (not line.startswith("typedef "+prefix))
                             ):
                                 line=re.sub(r"\btypedef\b",f"typedef {prefix}",line.strip())
+                    elif i in enum_types:
+                        print(f"UPDATING {i} DUE TO ENUM TYPE => {line}");
+                        line=re.sub(r"\btypedef\b",f"typedef enum",line.strip())
+                       
                     type_to_dependencies[i]['line']=line
                     
                     pass
@@ -2423,6 +2430,9 @@ class CodeCleaner:
         rev_trans={v:k for k,v in translation_dict.items()}
         mainStub = "int main()\n" + \
                "{\n"
+        mainStub_t="";
+        mainStub_pre=list();
+        mainStub_post=list();
         wrapperStub = ""
         #translation_dict = dict()
         # keys are the expected decompiled function name, value is actual decompiled function name
@@ -2439,7 +2449,7 @@ class CodeCleaner:
             #if target == "main":
             #    #translation_dict["main"]="patchmain"
             #    detour_target="{}{}".format(detour_prefix,"patchmain")
-            mainStub += f"\t{detour_target}(\n" 
+            mainStub_t += f"\t{detour_target}(\n" 
             print("Detour target: {}:{} => {} ".format(ltarget,trans_targ,detour_target))
 
             args = []
@@ -2518,7 +2528,7 @@ class CodeCleaner:
             #print("dataMap", dataMap)
             ebx_prefix=False
             if glibc_symbols and (len(stubMap[target].keys())>0 or len(dataMap[target].keys())>0):
-                mainStub += "\t\tNULL,\n"
+                mainStub_t += "\t\tNULL,\n"
                 wrapperStub += "\tvoid* EBX,\n"
                 init_mainBody= "\torigPLT_EBX = (unsigned int) EBX;\n"
                 ebx_prefix=True
@@ -2526,7 +2536,7 @@ class CodeCleaner:
             for s in stubMap[target].keys():
                 s_name=self.get_stub_name(s)
                 s_name=translation_dict.get(s_name,s_name)
-                mainStub +=  "\t\tNULL,\n" 
+                mainStub_t +=  "\t\tNULL,\n" 
                 wrapperStub += "\tvoid*"
                 if s in self.weakFuncs:
                     wrapperStub += "*"
@@ -2546,7 +2556,7 @@ class CodeCleaner:
             ZERO_PARAMS=True
             for d in dataMap[target].keys():
                 print("data", d)
-                mainStub +=  "\t\tNULL,\n"
+                mainStub_t +=  "\t\tNULL,\n"
                 dataDef = d.split(";")[0]
                 dataDef = dataDef.split("=")[0].strip()
                 dataType, dataName = self.getTypeAndLabel(dataDef)
@@ -2576,17 +2586,22 @@ class CodeCleaner:
                 argType = argTuple[0]
                 argName = argTuple[1]
                 if "double" in argType or "float" in argType or "int" in argType:
-                    mainStub += "\t\t(%s) 0,\n"  % argType
+                    mainStub_t += "\t\t(%s) 0,\n"  % argType
                 else:
-                    mainStub += "\t\t(%s) NULL,\n"  % argType
+                    varname=f"v{len(mainStub_pre)}";
+                    malloc=f"\t{argType}* {varname}=malloc(sizeof({argType}));"
+                    free=f"\tfree({varname});"
+                    mainStub_pre.append(malloc);
+                    mainStub_post.append(free);
+                    mainStub_t += f"\t\t{varname},\n"
                 wrapperStub += "\t%s %s,\n" % (argType, argName)
 
-            if mainStub.rstrip().endswith(','):
-                mainStub = mainStub.rstrip()[:-1]  #strip ,\n
+            if mainStub_t.rstrip().endswith(','):
+                mainStub_t = mainStub_t.rstrip()[:-1]  #strip ,\n
             if wrapperStub.rstrip().endswith(','):    
                 wrapperStub = wrapperStub.rstrip()[:-1]  #strip ,\n
 
-            mainStub += "\n\t);\n"
+            mainStub_t += "\n\t);\n"
             # pdr : need to move this outside of FOR loop
             #mainStub += "}\n"
 
@@ -2690,6 +2705,9 @@ class CodeCleaner:
         # print(wrapperStub)
 
         # pdr : move this to outside of FOR loop
+        mainStub += "\n".join(mainStub_pre)+"\n";
+        mainStub += mainStub_t;
+        mainStub += "\n".join(mainStub_post)+"\n";
         mainStub += "\treturn 0;\n"
         mainStub += "}\n"
 
