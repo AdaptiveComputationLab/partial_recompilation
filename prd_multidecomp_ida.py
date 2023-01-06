@@ -803,9 +803,10 @@ class CodeCleaner:
                 rtypefh.close()
         return structDump,recovered_types,needs_stdio
     
-    def update_params_for_forward_decls(self,line,forward_decls):
+    def update_params_for_typeclass(self,line,forward_decls,enum_decls):
         isfnptr,fnrettype,fnptrname,fnptrparams,fnptr_no_params=is_function_ptr(line)
         fwddecls_used=list()
+        enumdecls_used=list()
         if isfnptr:
             params_=[fnptrparams.strip()]
             if ',' in fnptrparams:
@@ -815,6 +816,7 @@ class CodeCleaner:
                     p=p.strip()
                     xt=get_basetype_info(p)
                     xlu=forward_decls.get(xt,None)
+                    xlu_enum=enum_decls.get(xt,None)
                     if xlu is not None:
                         if xt not in fwddecls_used:
                             fwddecls_used.append(xt)
@@ -822,10 +824,17 @@ class CodeCleaner:
                             params_[i]=f"struct {p}"
                         else:
                             params_[i]=f"const struct {p[len('const '):]}"
+                    elif xlu_enum is not None:
+                        if xt not in enumdecls_used:
+                            enumdecls_used.append(xt)
+                        if not p.startswith('const '):
+                            params_[i]=f"enum {p}"
+                        else:
+                            params_[i]=f"const enum {p[len('const '):]}"
                 new_params=",".join(params_)
-                return True,new_params,fnptr_no_params,fwddecls_used
+                return True,new_params,fnptr_no_params,fwddecls_used,enumdecls_used
         
-        return False,None,None,fwddecls_used
+        return False,None,None,fwddecls_used,enumdecls_used
 
     def typedef_resolution(self,structDump):
         type_lines=structDump.splitlines()
@@ -1068,7 +1077,7 @@ class CodeCleaner:
                         # should be on correct prefix
                             if(not ref_line.startswith("typedef "+valid_prefix)):
                                 ref_line=re.sub(r"\btypedef\b",f"typedef {valid_prefix}",ref_line)
-                                dprint(f"ALIAS UPDATE: Updating line to {ref_line}")
+                                dprint(f"ALIAS UPDATE: Updating line to '{ref_line}'")
                     
                             type_to_dependencies[als]['line']=ref_line                    
 
@@ -1142,7 +1151,7 @@ class CodeCleaner:
         # this loop allows to preprocess the types and their requirements to:
         #  1) get rid of extraction issues or "..." i.e., weird type results
         #  2) identify missing type definitions to prevent accumulating errors
-        #  3) transform type definition lines to use the 'struct' or 'union' keyword as appropriate
+        #  3) transform type definition lines to use the 'enum', 'struct', or 'union' keywords as appropriate
         #       which allows for forward declaration use in the case of circular references in type definitions
         #      => i.e., when another struct or a function pointer has a field that's a struct/union
         #               without 'struct|union' keyword, prepend it to the field
@@ -1152,6 +1161,7 @@ class CodeCleaner:
             reqs=type_to_dependencies[i]['reqs']
             
             fdecls=[d in fwd_decl_types for d in reqs]
+            enumdecls=[d in enum_types for d in reqs]
             not_defined=[]
             for idx,d in enumerate(copy.copy(reqs)):
                 # Reason #1
@@ -1165,7 +1175,7 @@ class CodeCleaner:
                 print(f"RUH-ROH, we have at least one undefined type => {not_defined} for '{i}'");
                 missing_type_defs.extend(not_defined)
                 missing_type_defs.append(i)
-            if any(fdecls):
+            if any(fdecls) or any(enumdecls):
                 if i in collective_types:
                     # Reason #3a - function pointers
                     mtch=re.match(r"^\s*(typedef)\s+((struct|union)(\s+__attribute__\(\(.*\)\))?)\s+(\S+)\s*(\{\s*(.*)\s*\}\s*)(\S+)\s*;\s*$",line)
@@ -1178,13 +1188,20 @@ class CodeCleaner:
                     reqs_=set()
                     x_fields=fields.split(';')
                     for idx,xf in enumerate(x_fields):
-                        changeit,newparams,fn_noparams,used_fwddecls=self.update_params_for_forward_decls(xf,forward_decls)
+                        _ret=self.update_params_for_typeclass(xf,forward_decls,enum_decls)
+                        changeit,newparams,fn_noparams,used_fwddecls,used_enumdecls=_ret
                         if changeit:
                             line=f"{fn_noparams}({newparams});"
                             x_fields[idx]=line
                         else:
                             xt=get_basetype_info(xf)
-                            if xt in fwd_decl_types:
+                            if xt in enum_types:
+                                print(f"Found 'enum' type: {xt}")
+                                if x_fields[idx].startswith('const '):
+                                    x_fields[idx]=f"const enum {x_fields[idx][len('const '):]}"
+                                else:
+                                    x_fields[idx]=f"enum {x_fields[idx]}"
+                            elif xt in fwd_decl_types:
                                 if type_to_dependencies.get(xt,None) is not None:
                                     ttype=type_to_dependencies[xt]['storage'] 
                                     tname=type_to_dependencies[xt]['defname']
@@ -1201,7 +1218,8 @@ class CodeCleaner:
                 elif i in fnptr_types:
                     # Reason #3b - function pointers 
                     mtch=re.match(r"^\s*(typedef)\s+((\w+(\s+\w+)*)\s+(\(\s*\*\s*(\w+)\))\s*(\((.*)\)))\s*;\s*$",line);
-                    changeit,newparams,fn_noparams,used_fwddecls=self.update_params_for_forward_decls(mtch.group(2),forward_decls)
+                    _ret=self.update_params_for_typeclass(mtch.group(2),forward_decls,enum_decls)
+                    changeit,newparams,fn_noparams,used_fwddecls,used_enumdecls=_ret
                     if changeit:
                         line=f"{mtch.group(1)} {fn_noparams}({newparams});"
                         type_to_dependencies[i]['line']=line
@@ -1210,6 +1228,7 @@ class CodeCleaner:
                     line=type_to_dependencies[i]['line']
                     if i in list(fwd_decl_types) and forward_decls.get(i,None) is None:
                         dprint(f"INVESTIGATE THIS: {i} in fwd_decl_types, but not in forward_decls.keys()")
+                    # 'struct' or 'union'
                     if forward_decls.get(i,None) is not None:
                         ref_line=forward_decls[i]['line'].strip()
                         for prefix in ['struct ','union ']:
