@@ -61,7 +61,7 @@ CHDR_TYPES=[
 TYPES_REQUIRING_STDIO=['FILE']
 
 DIETLIBC_TYPES=[
-    'uint32_t','int32_t','uint8_t','int8_t','uint16_t','int16_t'
+    'uint32_t','int32_t','uint8_t','int8_t','uint16_t','int16_t','bool'
 ]
 
 STD_HEADER_TYPES=TYPES_REQUIRING_STDIO+CHDR_TYPES+DIETLIBC_TYPES
@@ -1181,6 +1181,7 @@ class CodeCleaner:
             if any(fdecls) or any(enumdecls):
                 if i in collective_types:
                     # Reason #3a - function pointers
+                    dprint(f"REASON 3a: '{i}' is COLLECTIVE TYPE")
                     mtch=re.match(r"^\s*(typedef)\s+((struct|union)(\s+__attribute__\(\(.*\)\))?)\s+(\S+)\s*(\{\s*(.*)\s*\}\s*)(\S+)\s*;\s*$",line)
                     if not mtch:
                         dprint(f"ERROR: Expecting '{i}' to be a collective_type [definition:'{line}']")
@@ -1219,6 +1220,7 @@ class CodeCleaner:
                     line="".join(prefix)+new_fields+"".join(postfix)
                     type_to_dependencies[i]['line']=line
                 elif i in fnptr_types:
+                    dprint(f"REASON 3b: '{i}' is FNPTR TYPE")
                     # Reason #3b - function pointers 
                     mtch=re.match(r"^\s*(typedef)\s+((\w+(\s+\w+)*)\s+(\(\s*\*\s*(\w+)\))\s*(\((.*)\)))\s*;\s*$",line);
                     _ret=self.update_params_for_typeclass(mtch.group(2),forward_decls,enum_decls)
@@ -1228,20 +1230,23 @@ class CodeCleaner:
                         type_to_dependencies[i]['line']=line
                 elif i in simple_types:
                     # Reason #4 
+                    bt=type_to_dependencies[i]['base_type']
+                    dprint(f"REASON 4: '{i}' is SIMPLE => \"{line}\" (Base type: '{bt}')")
                     line=type_to_dependencies[i]['line']
                     if i in list(fwd_decl_types) and forward_decls.get(i,None) is None:
                         dprint(f"INVESTIGATE THIS: {i} in fwd_decl_types, but not in forward_decls.keys()")
                     # 'struct' or 'union'
-                    if forward_decls.get(i,None) is not None:
-                        ref_line=forward_decls[i]['line'].strip()
+                    if forward_decls.get(bt,None) is not None:
+                        ref_line=forward_decls[bt]['line'].strip()
                         for prefix in ['struct ','union ']:
                             if ( 
                             (ref_line.startswith(prefix)) and
                             (not line.startswith("typedef "+prefix))
                             ):
                                 line=re.sub(r"\btypedef\b",f"typedef {prefix}",line.strip())
-                    elif i in enum_types:
-                        print(f"UPDATING {i} DUE TO ENUM TYPE => {line}");
+                       
+                    elif bt in enum_types and not line.strip().startswith("typedef enum"):
+                        dprint(f"UPDATING {i} DUE TO ENUM TYPE => {line}");
                         line=re.sub(r"\btypedef\b",f"typedef enum",line.strip())
                        
                     type_to_dependencies[i]['line']=line
@@ -1518,31 +1523,38 @@ class CodeCleaner:
         first=list()
         second=list()
         third=list()
+        fourth=list()
         initial_x_requires=orig_x_requires['original']
         reduced_x_requires=orig_x_requires['reduced']
         for idx,o in enumerate(resolvable):
+            dprint(f"{o} | {reduced_x_requires[o]} || {initial_x_requires[o]}")
             not_o=copy.copy(resolvable).remove(o)
             # intersect the original x_requires[o] with current resolvable set
             # if this is empty, add it because we have no direct uses and any typedef'd struct is fwd declared
             direct_unresolved = list(resolvable & reduced_x_requires[o])
             using_others=any([x in reduced_x_requires[o] for x in (not_o)]) if not_o is not None else False
+            dprint(f"CHECK(0): direct_unresolved=> {direct_unresolved}")
             if o in reduced_x_requires[o]:
-                if not using_others:
+                if o in direct_unresolved:
+                    # let's put self-referencing type declarations at the end
+                    dprint(f"FOURTH: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                    fourth.append(o)
+                elif not using_others:
                     first.insert(0,o)    
-                    dprint(f"FIRST(1): {o} [{x_requires[o]}] => {direct_unresolved}")
+                    dprint(f"FIRST(1): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
                 else:
                     first.append(o)    
-                    dprint(f"FIRST(2): {o} [{x_requires[o]}] => {direct_unresolved}")
+                    dprint(f"FIRST(2): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
 
             elif len(direct_unresolved)==0:
-                dprint(f"SECOND: {o} [{x_requires[o]}] => {direct_unresolved}")
+                dprint(f"SECOND: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
                 second.append(o)
             else:
-                dprint(f"THIRD: {o} [{x_requires[o]}]= > {direct_unresolved}")
+                dprint(f"THIRD: {o} [{x_requires[o]}]= > {direct_unresolved} [{initial_x_requires[o]}]")
                 third.append(o)
         # else the remaining order doesn't matter
                 
-        return first+second+third
+        return first+second+third+fourth
 
 
         
@@ -2705,6 +2717,8 @@ class CodeCleaner:
         # print(wrapperStub)
 
         # pdr : move this to outside of FOR loop
+        if len(mainStub_pre)>0:
+            mainStub = "\n#include <stdlib.h>\n"+mainStub;
         mainStub += "\n".join(mainStub_pre)+"\n";
         mainStub += mainStub_t;
         mainStub += "\n".join(mainStub_post)+"\n";
