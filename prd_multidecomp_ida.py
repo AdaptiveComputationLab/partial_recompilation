@@ -808,13 +808,17 @@ class CodeCleaner:
         fwddecls_used=list()
         enumdecls_used=list()
         if isfnptr:
+            bt=cleanup_basetype(fnrettype)
+            if forward_decls.get(bt,None) is not None:
+                fnptr_no_params="struct "+fnptr_no_params
             params_=[fnptrparams.strip()]
             if ',' in fnptrparams:
                 params_=fnptrparams.strip().split(',') # parans should have been removed 
             if len(params_)>0 or not (len(params_)==1 and params_[0].strip()==""):
                 for i,p in enumerate(params_):
                     p=p.strip()
-                    xt=get_basetype_info(p)
+                    bt=get_basetype_info(p)
+                    xt=cleanup_basetype(bt)
                     xlu=forward_decls.get(xt,None)
                     xlu_enum=enum_decls.get(xt,None)
                     if xlu is not None:
@@ -1428,16 +1432,19 @@ class CodeCleaner:
             prev_undefined=copy.copy(undefined)
             updated=False
             for x in undefined:
-                dprint(f"Looking at {x}")
-                resolvable,checkfwddecl=self.process_rules_for_x(x,x_requires,uses_x,RESOLVED,orig_x_requires)
+                dprint(f"DEBUG: Looking at {x}")
+                resolvable,checkfwddecl=self.process_rules_for_x(x,x_requires,uses_x,RESOLVED,orig_x_requires,fnptr_types)
+                dprint(f"DEBUG: Looked at {x} => Resolvable {resolvable}")
                 if resolvable is not None and len(resolvable)>0:
                     updated=True
                     if checkfwddecl is not None and len(checkfwddecl)>0:
                         for f in checkfwddecl:
-                            assert f in fwd_decl_types
+                            assert f in fwd_decl_types or f in fnptr_types
                     
                     for r in resolvable:
+                        dprint(f"DEBUG: RESOLVING {r}")
                         if r not in definition_order:
+                            dprint(f"DEBUG: RESOLVED {r}")
                             definition_order.append(r)
                         RESOLVED.add(r)
                         if uses_x.get(r,None) is not None:
@@ -1453,9 +1460,7 @@ class CodeCleaner:
                 for u in undefined:
                     u_info=(u in fwd_decl_types,u in simple_types,u in collective_types,u in RESOLVED)
                     x_requires_u=x_requires.get(u,set())
-                    #print(f"UNDEFINED TYPE INFO => {u} :: {u_info}")
-                    #print(f"UNDEFINED TYPE DEFINITION INFO => {u} :: {type_to_dependencies[u]}")
-                    print(f"{u}:{x_requires_u}")   
+                    dprint(f"{u}:{x_requires_u}")   
                 assert updated
 
         print("DONE -- with dependencies",flush=True)
@@ -1478,6 +1483,10 @@ class CodeCleaner:
             line=type_to_dependencies[i]['line']
             if needs_stdio and i in STD_HEADER_TYPES:
                 line=f"// included with std headers {i} | "+line
+            elif "(...)" in line:
+                #transformed_line=re.sub(r'\b\((\*\w+)\)\s*\(\.\.\.\)',r'\1',line);
+                transformed_line=re.sub(r'\((\*\w+)\)\s*\(\.\.\.\)',r'\1',line);
+                line=f"// included with std headers {i} | "+line
             typedefs.append(line)
         return "\n".join(typedefs),recovered_types,needs_stdio
         
@@ -1487,38 +1496,41 @@ class CodeCleaner:
     def rule_one(self,x:str,x_requires:dict,resolved:set):
         valid=None
         lx_requires_x=list(x_requires[x]-resolved)
-        print(f"x_requires[{x}] = {lx_requires_x}")
+        dprint(f"DEBUG: x_requires[{x}] = {lx_requires_x}")
         if len(lx_requires_x)==0 or (len(lx_requires_x)==1 and lx_requires_x[0]==x):
             valid=set([x])
-            print(f"RULE 1: valid => {x}")
+            print(f"DEBUG: RULE 1: {x} is valid => {lx_requires_x}")
         return valid
     
-    def rule_two(self,x,x_requires:dict,uses_x:dict,resolved:set):
+    def rule_two(self,x,x_requires:dict,uses_x:dict,resolved:set,fnptr_types:list):
         x_reqs=x_requires[x]-resolved
         uses_x_x=uses_x.get(x,set())-resolved
         req_union=set([ x for y in x_reqs for x in x_requires[y]-resolved ])|x_reqs
         uses_union=set([ x for y in x_reqs for x in uses_x.get(y,[])-resolved ])|uses_x_x
         valid_=None
+        print(f"DEBUG: CHECKING RULE 2: {x} is valid [{req_union <= uses_union}] => {req_union} ({uses_union})")
         if req_union <= uses_union:
             valid_=req_union
-            print(f"RULE 2: valid => {req_union}")
+            if x in fnptr_types:
+                valid_.add(x)
+            print(f"DEBUG: RULE 2: {x} is valid [{valid_}] => {req_union} ({uses_union})")
         return valid_
 
-    def process_rules_for_x(self,x:str,x_requires:dict,uses_x:dict,resolved:set,orig_x_requires:dict):
+    def process_rules_for_x(self,x:str,x_requires:dict,uses_x:dict,resolved:set,orig_x_requires:dict,fnptr_types:list):
         new_defines=None
         check_for_fwddecl=None
         r1=self.rule_one(x,x_requires,resolved)
         if r1:
             new_defines = r1
         else:
-            r2=self.rule_two(x,x_requires,uses_x,resolved)
+            r2=self.rule_two(x,x_requires,uses_x,resolved,fnptr_types)
             if r2:
-                new_defines=self.reorder_(r2,x_requires,orig_x_requires)
+                new_defines=self.reorder_(r2,x_requires,orig_x_requires,fnptr_types)
                 #new_defines = r2
                 check_for_fwddecl = r2
         return new_defines,check_for_fwddecl
 
-    def reorder_(self,resolvable,x_requires,orig_x_requires):
+    def reorder_(self,resolvable,x_requires,orig_x_requires,fnptr_types):
         
         first=list()
         second=list()
@@ -1526,35 +1538,38 @@ class CodeCleaner:
         fourth=list()
         initial_x_requires=orig_x_requires['original']
         reduced_x_requires=orig_x_requires['reduced']
+        dprint(f"DEBUG: RESOLVABLE => {resolvable}")
         for idx,o in enumerate(resolvable):
-            dprint(f"{o} | {reduced_x_requires[o]} || {initial_x_requires[o]}")
+            dprint(f"DEBUG: {o} [resolvable:{resolvable}] | {reduced_x_requires[o]} || {initial_x_requires[o]}")
             not_o=copy.copy(resolvable).remove(o)
             # intersect the original x_requires[o] with current resolvable set
             # if this is empty, add it because we have no direct uses and any typedef'd struct is fwd declared
             direct_unresolved = list(resolvable & reduced_x_requires[o])
             using_others=any([x in reduced_x_requires[o] for x in (not_o)]) if not_o is not None else False
-            dprint(f"CHECK(0): direct_unresolved=> {direct_unresolved}")
+            dprint(f"DEBUG: CHECK(0): direct_unresolved=> {direct_unresolved}")
             if o in reduced_x_requires[o]:
                 if o in direct_unresolved:
                     # let's put self-referencing type declarations at the end
-                    dprint(f"FOURTH: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                    dprint(f"DEBUG: FOURTH: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
                     fourth.append(o)
                 elif not using_others:
                     first.insert(0,o)    
-                    dprint(f"FIRST(1): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                    dprint(f"DEBUG: FIRST(1): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
                 else:
                     first.append(o)    
-                    dprint(f"FIRST(2): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                    dprint(f"DEBUG: FIRST(2): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
 
             elif len(direct_unresolved)==0:
-                dprint(f"SECOND: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                dprint(f"DEBUG: SECOND: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
                 second.append(o)
             else:
-                dprint(f"THIRD: {o} [{x_requires[o]}]= > {direct_unresolved} [{initial_x_requires[o]}]")
+                dprint(f"DEBUG: THIRD: {o} [{x_requires[o]}]= > {direct_unresolved} [{initial_x_requires[o]}]")
                 third.append(o)
         # else the remaining order doesn't matter
                 
-        return first+second+third+fourth
+        resolved_order= first+second+third+fourth
+        dprint(f"DEBUG: RESOLVED ORDER {resolved_order}")
+        return resolved_order
 
 
         
@@ -1756,7 +1771,7 @@ class CodeCleaner:
                 if ";" in line:
                     capture=False
 
-        print("GLOBAL DATA LINES : "+"\n".join(global_dataLines_)+"\n")
+        print("GLOBAL DATA LINES : \n["+"\n".join(global_dataLines_)+"\n]\n")
         gdataMap, ldataMap_ = self.process_datalines(dataLines,data_syms,gdataMap)
 
         return gdataMap, removeList, ldataMap_, global_dataLines_
@@ -2605,7 +2620,7 @@ class CodeCleaner:
                     free=f"\tfree({varname});"
                     mainStub_pre.append(malloc);
                     mainStub_post.append(free);
-                    mainStub_t += f"\t\t{varname},\n"
+                    mainStub_t += f"\t\t*{varname},\n"
                 wrapperStub += "\t%s %s,\n" % (argType, argName)
 
             if mainStub_t.rstrip().endswith(','):
@@ -3053,6 +3068,12 @@ class GenprogDecomp:
             print("\nFUNC_DECLS:\n{}".format(" -- "+"\n -- ".join(func_decls)))
             print("\nDECOMP_DECLS:\n{}".format(" -- "+"\n -- ".join(decomp_decls)))
             print("\nDECOMP_DEFS:\n{}".format(" -- "+"\n -- ".join(decomp_defs)))
+            basic_=[]
+            basic_+=["\n","//"+'-'*68,"// Function Prototypes"]+func_decls+["\n"]
+            basic_+=["\n","//"+'-'*68,"// Decompiled Variables"]+data_decls+["\n"]
+            basic_+=["\n","//"+'-'*68,"// Decompiled Function Declarations"]+decomp_decls+["\n"]
+            basic_+=["\n","//"+'-'*68,"// Decompiled Function Definitions"]+decomp_defs+["\n"]
+            basic_finalOutput="\n\n"+"\n".join(basic_)+"\n\n"
 
             # replacing data declarations with the defines
             data_decls = cleaner.replace_data_defines_list(data_decls, dataMap, dataRemoveList)
@@ -3061,6 +3082,7 @@ class GenprogDecomp:
             if self.use_new_features:
                 full_+=["\n","//"+"-"*68,"// EBX mechanism needed to interface with original binary's PLT","\n",
                     "unsigned int preEBX = NULL;","unsigned int origPLT_EBX = NULL;","\n"]
+
             full_+=header_decls[0:6]+["\n","//"+"-"*68,"// Function Declarations","\n"]
             full_+=func_decls+["\n"]
             full_+=["\n","//"+'-'*68,"// Decompiled Variables"]+data_decls+["\n"]
@@ -3102,9 +3124,15 @@ class GenprogDecomp:
             header = ""
             header += "#include \"defs.h\"\n"
             if self.use_new_features:
+                basic_finalOutput=f"#include \"defs.h\"\n#include \"{typehdr}\""+basic_finalOutput
                 header += f"#include \"{typehdr}\"\n"
                 typedefLines = re.sub("::\$","__E__",typedefLines)
                 typedefLines = re.sub("::","__",typedefLines)
+                basic_finalOutput=re.sub("::","__",basic_finalOutput)
+                if self.strip:
+                    basic_finalOutput=cleaner.transform_cpp(basic_finalOutput)
+                else:
+                    basic_finalOutput=cleaner.transform_std(basic_finalOutput)
 
             header += "\n// Auto-generated code for recompilation of target [%s]\n\n" % target
             finalOutput = header + finalOutput + decomp_finalOutput
@@ -3129,6 +3157,10 @@ class GenprogDecomp:
                     f.write(typedefLines)
                     f.close()
                     print(f"DONE WRITING TO {self.ouput_directory}/{target}/{typehdr}")
+                outpath = os.path.join(self.ouput_directory, target, "basic.c")
+                with open(outpath,"w") as of:
+                    of.write(basic_finalOutput)
+                    of.close()
             
             success.append((target, binpath, funcList))
 
