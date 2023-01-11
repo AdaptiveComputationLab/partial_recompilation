@@ -3061,6 +3061,14 @@ class GenprogDecomp:
                 decomp_failure_count+=1
                 continue
             
+            # let's collect basic decompiler output before any transformation
+            basic_=[]
+            basic_+=["\n","//"+'-'*68,"// Function Prototypes"]+func_decls+["\n"]
+            basic_+=["\n","//"+'-'*68,"// Decompiled Variables"]+data_decls+["\n"]
+            basic_+=["\n","//"+'-'*68,"// Decompiled Function Declarations"]+decomp_decls+["\n"]
+            basic_+=["\n","//"+'-'*68,"// Decompiled Function Definitions"]+decomp_defs+["\n"]
+            basic_finalOutput="\n\n"+"\n".join(basic_)+"\n\n"
+
             #let's clean-up the GLIBC references to avoid collision
             decomp_defs = cleaner.prevent_glibc_collision(decomp_defs,CSTDIO_FUNCS+glibc_symbols)
 
@@ -3070,12 +3078,6 @@ class GenprogDecomp:
             print("\nFUNC_DECLS:\n{}".format(" -- "+"\n -- ".join(func_decls)))
             print("\nDECOMP_DECLS:\n{}".format(" -- "+"\n -- ".join(decomp_decls)))
             print("\nDECOMP_DEFS:\n{}".format(" -- "+"\n -- ".join(decomp_defs)))
-            basic_=[]
-            basic_+=["\n","//"+'-'*68,"// Function Prototypes"]+func_decls+["\n"]
-            basic_+=["\n","//"+'-'*68,"// Decompiled Variables"]+data_decls+["\n"]
-            basic_+=["\n","//"+'-'*68,"// Decompiled Function Declarations"]+decomp_decls+["\n"]
-            basic_+=["\n","//"+'-'*68,"// Decompiled Function Definitions"]+decomp_defs+["\n"]
-            basic_finalOutput="\n\n"+"\n".join(basic_)+"\n\n"
 
             # replacing data declarations with the defines
             data_decls = cleaner.replace_data_defines_list(data_decls, dataMap, dataRemoveList)
