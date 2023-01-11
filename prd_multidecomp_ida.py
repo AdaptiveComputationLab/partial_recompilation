@@ -1548,7 +1548,7 @@ class CodeCleaner:
             using_others=any([x in reduced_x_requires[o] for x in (not_o)]) if not_o is not None else False
             dprint(f"DEBUG: CHECK(0): direct_unresolved=> {direct_unresolved}")
             if o in reduced_x_requires[o]:
-                if o in direct_unresolved:
+                if o in direct_unresolved and o in initial_x_requires[o]:
                     # let's put self-referencing type declarations at the end
                     dprint(f"DEBUG: FOURTH: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
                     fourth.append(o)
@@ -2612,7 +2612,9 @@ class CodeCleaner:
                 ZERO_PARAMS=False
                 argType = argTuple[0]
                 argName = argTuple[1]
-                if "double" in argType or "float" in argType or "int" in argType:
+                if argType=="...":
+                    next;
+                elif "double" in argType or "float" in argType or "int" in argType:
                     mainStub_t += "\t\t(%s) 0,\n"  % argType
                 else:
                     varname=f"v{len(mainStub_pre)}";
