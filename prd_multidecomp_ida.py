@@ -1545,19 +1545,20 @@ class CodeCleaner:
             # intersect the original x_requires[o] with current resolvable set
             # if this is empty, add it because we have no direct uses and any typedef'd struct is fwd declared
             direct_unresolved = list(resolvable & reduced_x_requires[o])
-            using_others=any([x in reduced_x_requires[o] for x in (not_o)]) if not_o is not None else False
-            dprint(f"DEBUG: CHECK(0): direct_unresolved=> {direct_unresolved}")
+            dprint(f"DEBUG: CHECK(0) for {o}: direct_unresolved=> {direct_unresolved} [reduced_x_requires: {reduced_x_requires[o]}]")
             if o in reduced_x_requires[o]:
                 if o in direct_unresolved and o in initial_x_requires[o]:
-                    # let's put self-referencing type declarations at the end
-                    dprint(f"DEBUG: FOURTH: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                    if len(direct_unresolved)>1:
+                        # let's put self-referencing type declarations that depend on other unresolved types at the end
+                        dprint(f"DEBUG: FOURTH(1): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
                     fourth.append(o)
-                elif not using_others:
-                    first.insert(0,o)    
-                    dprint(f"DEBUG: FIRST(1): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                    else:
+                        dprint(f"DEBUG: FOURTH(2): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                        fourth.insert(0,o)
+                
                 else:
                     first.append(o)    
-                    dprint(f"DEBUG: FIRST(2): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                    dprint(f"DEBUG: FIRST: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
 
             elif len(direct_unresolved)==0:
                 dprint(f"DEBUG: SECOND: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
@@ -2380,10 +2381,11 @@ class CodeCleaner:
         return output
 
     def prevent_glibc_collision(self,inlines,glibc_funcs):
-        stdio_fns='|'.join(glibc_funcs)
+        stdio_fns='|'.join([ re.escape(g) for g in glibc_funcs])
+        
         #print(f"STDIO_FNS: ({stdio_fns})")
         #GLIBC_XFORM_PREFIX
-        stdio_re=re.compile(r"\b"+f"({stdio_fns})"+r"\b")
+        stdio_re=re.compile(r'\b'+f"({stdio_fns})"+r'\b')
         
         return [ 
             re.sub(r"(?<!->)\b"+f"(?<!\.)({stdio_fns})"+r"\b",GLIBC_XFORM_PREFIX+r"\1",i)
