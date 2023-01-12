@@ -30,8 +30,12 @@ typedef int32 _BOOL4;
 
 #if defined(__GNUC__)
 #define __noreturn __attribute__((noreturn))
+#define __cdecl  __attribute__((__cdecl__))
+#define __stdcall  __attribute__((__stdcall__))
 #else
 #define __noreturn __declspec(noreturn)
+#define __cdecl 
+#define __stdcall
 #endif
 
 
@@ -54,4 +58,6 @@ typedef struct {
   int count;
   wchar_t sofar;
 } mbstate_t;
+
+
 
