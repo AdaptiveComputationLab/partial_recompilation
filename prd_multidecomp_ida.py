@@ -2567,7 +2567,7 @@ class CodeCleaner:
                 s_name=translation_dict.get(s_name,s_name)
                 mainStub_t +=  "\t\tNULL,\n" 
                 wrapperStub += "\tvoid*"
-                if s in self.weakFuncs:
+                if s_name not in glibc_symbols and s in self.weakFuncs:
                     wrapperStub += "*"
                 wrapperStub += " my%s,\n" % s_name
                 if ":" not in call_me[target]:
@@ -2670,7 +2670,7 @@ class CodeCleaner:
                 elif glibc_symbols and name in glibc_symbols or name in CSTDIO_FUNCS:
                     name=f"{STUB_PREFIX}{name}"
                 wrapperStub += "\t%s = (%s) (" % (name, pname) 
-                if s in self.weakFuncs:
+                if dname not in glibc_symbols and s in self.weakFuncs:
                     wrapperStub += "*"
                 wrapperStub += "my%s);\n" % (dname)
     
@@ -2956,6 +2956,7 @@ class GenprogDecomp:
             data_symbols = [ x['name'] for s in ['d','D','b','B'] for x in symbols_lut[s] ]
             fn_symbols = [ x['name'] for s in ['t','T','U','w','W'] for x in symbols_lut[s] ]
             glibc_symbols = [ x['name'] for s in ['t','T','U','w','W'] for x in symbols_lut[s] if x['is_glibc'] and (x['name'] not in CSTDIO_DATASYMS)]
+            ext_symbols = [ x['name'] for s in ['U'] for x in symbols_lut[s] ]
             finalOutput += cleaner.generate_det_placeholders()
 
             fulldecomp_code=""
@@ -3030,7 +3031,7 @@ class GenprogDecomp:
                 # funcHeaders are the local function definitions
                 guessed_protos |= set(cleaner.get_guessed_funcs(decomp_code))
                 stubs, funcHeaders, h, s, f, d, g, translate_dict,rm_decomp_decl = cleaner.get_stubs(decomp_code,stubs,funcHeaders,detours_re,
-                    decomp_decls,fn_symbols,glibc_symbols,data_symbols,
+                    decomp_decls,fn_symbols,glibc_symbols+ext_symbols,data_symbols,
                     translate_dict,guessed_protos,decomp_decls)
                 decomp_per_func[detour_funcs[idx]]=h[d:-1]
                 #return stubs, funcs, fulldecomp, lstubs, lfuncs, fn_start,global_fns
@@ -3072,7 +3073,7 @@ class GenprogDecomp:
             basic_finalOutput="\n\n"+"\n".join(basic_)+"\n\n"
 
             #let's clean-up the GLIBC references to avoid collision
-            decomp_defs = cleaner.prevent_glibc_collision(decomp_defs,CSTDIO_FUNCS+glibc_symbols)
+            decomp_defs = cleaner.prevent_glibc_collision(decomp_defs,CSTDIO_FUNCS+glibc_symbols+ext_symbols)
 
             # let's uniquify the header lines by the set datatype
             print("\nFUNC_HEADERS:\n{}".format(" -- "+"\n -- ".join(funcHeaders['prototypes'])))
@@ -3103,13 +3104,13 @@ class GenprogDecomp:
             updated_stubs,updated_dataMap,nm2decomp_syms=cleaner.resolve_dependencies(stubs_per_func,dataMap_per_func)
 
             print(f"GLIBC SYMBOLS => {glibc_symbols} ({type(glibc_symbols)})")
-            stubMap, nonCGCList= cleaner.make_pcgc_stubs(stubs, funcHeaders['prototypes'],glibc_symbols if self.use_new_features else None)
+            stubMap, nonCGCList= cleaner.make_pcgc_stubs(stubs, funcHeaders['prototypes'],glibc_symbols+ext_symbols if self.use_new_features else None)
             for f in detour_funcs:
                 #stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(stubs_per_func[f],funcHeaders_per_func[f])
                 #print(f"f=>{f}")
                 #print(f"updated_stubs=>{updated_stubs}")
                 #print(f"updated_stubs[f]=>{updated_stubs[f]}")
-                stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(updated_stubs[f],funcHeaders['prototypes'],glibc_symbols)
+                stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(updated_stubs[f],funcHeaders['prototypes'],glibc_symbols+ext_symbols)
             # finalOutput = cleaner.remove_nonCGC_calls(finalOutput, nonCGCList)
             decomp_finalOutput = cleaner.replace_stubs(decomp_finalOutput, stubMap)
             # pdr update - let's not rename the functions
@@ -3122,7 +3123,7 @@ class GenprogDecomp:
 
             print("    --- Generating wrappers...")
             # we just don't want mainFunc, we want all detoured functions
-            footer,detfn_defs = cleaner.generate_wrapper(detour_funcs, funcHeaders_per_func, stubMap_, updated_dataMap, self.detour_entry_fn_prefix,translate_dict,self.dem2mangLUT,glibc_symbols if self.use_new_features else None)
+            footer,detfn_defs = cleaner.generate_wrapper(detour_funcs, funcHeaders_per_func, stubMap_, updated_dataMap, self.detour_entry_fn_prefix,translate_dict,self.dem2mangLUT,glibc_symbols+ext_symbols if self.use_new_features else None)
 
             decomp_finalOutput += footer
 
