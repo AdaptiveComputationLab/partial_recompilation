@@ -1551,7 +1551,7 @@ class CodeCleaner:
                     if len(direct_unresolved)>1:
                         # let's put self-referencing type declarations that depend on other unresolved types at the end
                         dprint(f"DEBUG: FOURTH(1): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
-                    fourth.append(o)
+                        fourth.append(o)
                     else:
                         dprint(f"DEBUG: FOURTH(2): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
                         fourth.insert(0,o)
