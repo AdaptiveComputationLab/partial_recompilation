@@ -113,6 +113,9 @@ PRIMITIVES = get_primitives()
 
 SYSTEM_TYPES=PRIMITIVES+STD_HEADER_TYPES
 
+def get_array_size(x):
+    return len(re.findall("\[\d*\]",x))
+
 def get_basetype_info(field):
     # maybe this is a function prototype where there's only the type for each param
     # making this the default
@@ -163,6 +166,13 @@ def writepickle(pkl_file,data):
 def readpickle(pkl_file):
     f=open(pkl_file,'rb')
     return pickle.load(f)
+
+def get_function_name(line):
+    x=line.split(";")[0].split("(")[0].strip().rsplit()[-1]
+    while x.startswith("*"):
+        x=x[1:]
+    return x
+    
 
 def is_function_ptr(line):
     #x=re.match("\s*\*?(\((\s*\*)+\s*\w+\)|\w+)\((.*)\)",line)
@@ -1411,6 +1421,9 @@ class CodeCleaner:
                     undefined.remove(u)
                     RESOLVED.add(u)
                     del uses_x[u]
+            else:
+                print(f"DEBUG: {u} is not SIMPLE {u} in all_user_defined_types: {u in all_user_defined_types}; {u} in undefined:{u in undefined}")
+                pass
 
         orig_x_requires['reduced']=copy.deepcopy(orig_x_requires['original'])
         
@@ -1428,6 +1441,8 @@ class CodeCleaner:
         
         problems=missing_type_defs+list(problems-set(plist)) # let's make sure the original missing types are ordered first
         prev_undefined=None
+        print(f"tiny_page in undefined=> {'tiny_page' in undefined}; tiny_page in RESOLVED => {'tiny_page' in RESOLVED}")
+        print(f"malloc_t requires : {x_requires['malloc_t']} (uses tiny_page: {uses_x['tiny_page']})")
         while(len(undefined)>0):    
             prev_undefined=copy.copy(undefined)
             updated=False
@@ -1454,14 +1469,33 @@ class CodeCleaner:
                                         x_requires[n].remove(r)
             undefined=undefined-set(RESOLVED)
             if not updated:
-                print(f"ERROR! We should be resolving at least one type per iteration")
-                print(f"NOTE: These are the remaining unresolved types: {undefined}")
-                print(f"NOTE: Exiting to debug")
+                changed=False
                 for u in undefined:
                     u_info=(u in fwd_decl_types,u in simple_types,u in collective_types,u in RESOLVED)
                     x_requires_u=x_requires.get(u,set())
-                    dprint(f"{u}:{x_requires_u}")   
-                assert updated
+                    new_x_requires_u=set()
+                    for xx in x_requires_u:
+                        if xx in RESOLVED:
+                            pass
+                        else:
+                            new_x_requires_u.add(xx)
+                    x_requires[u]=new_x_requires_u
+                    if (x_requires_u!=new_x_requires_u):
+                        changed=True
+                        dprint(f"[CHANGED] {u}:{new_x_requires_u}")   
+                    else:
+                        dprint(f"[UNCHANGED] {u}:{x_requires_u}")   
+                if not changed:
+                    print(f"WARNING!! Proceeding although we have circular references we are unable to resolve.")
+                    print(f"ERROR! We should be resolving at least one type per iteration")
+                    print(f"NOTE: These are the remaining unresolved types: {undefined}")
+                    #print(f"NOTE: Exiting to debug")
+                    for u in undefined:
+                        RESOLVED.add(u)
+                    undefined=undefined-set(RESOLVED)
+                    assert len(undefined)==0, f"ERROR! we have these things undefined {undefined} "
+                    
+
 
         print("DONE -- with dependencies",flush=True)
 
@@ -1547,7 +1581,7 @@ class CodeCleaner:
             direct_unresolved = list(resolvable & reduced_x_requires[o])
             dprint(f"DEBUG: CHECK(0) for {o}: direct_unresolved=> {direct_unresolved} [reduced_x_requires: {reduced_x_requires[o]}]")
             if o in reduced_x_requires[o]:
-                if o in direct_unresolved and o in initial_x_requires[o]:
+                if o in direct_unresolved and (o in initial_x_requires[o]|x_requires[o]):
                     if len(direct_unresolved)>1:
                         # let's put self-referencing type declarations that depend on other unresolved types at the end
                         dprint(f"DEBUG: FOURTH(1): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
@@ -1810,15 +1844,15 @@ class CodeCleaner:
                 print("{} [DATA SYMBOL]".format(base_dataName))
                 ext_syms.add(base_dataName)
                 
-            array_size=len(re.findall("\[\d*\]",dataName))
+            array_size=get_array_size(dataName)
             print("Array Size:", array_size)
             defLine=""
             if array_size>=2:
-                print("// --- WARNING! Two-dimensional array objects are not yet supported")
+                print(f"// --- WARNING! Two-dimensional array objects are not yet supported => {dataName}")
                 defLine += "%s *(p%s);\n" %(dataType, dataName)
                 dataName = dataName.split("[")[0] # handle arrays
                 defLine += "#define %s (*p%s)\n" % (dataName, dataName)
-                print(" // --- END OF WARNING!\n")
+                
             elif array_size==1 and (("*" not in dataType) or ("*" in dataType and "[]" in dataName)):
                 dataName = dataName.split("[")[0] # handle arrays
                 defLine = "%s *(p%s);\n" %(dataType, dataName)
@@ -2080,6 +2114,7 @@ class CodeCleaner:
                     # hex-rays either gets rid of prepended _ character or appends _\d+ for inlined functions
                     if  sym_name == "patchmain":
                         translate_dict[sym_name]="main"
+                        translate_dict["main"]="patchmain"
                         nm_sym_name="main"
                     elif new_sym != sym_name and new_sym in fn_symbols:
                         #line = re.sub(r'\b'+sym_name+r'\b',new_sym,line)
@@ -2470,8 +2505,8 @@ class CodeCleaner:
             #trans_targ=rev_trans.get(target,target) if target != "main" else "main"
             trans_targ=translation_dict.get(target,target)
             ltarget=target
-            if trans_targ=="main":
-                ltarget="patchmain"
+            print(f"DEBUG: ORiginal target = {ltarget}, Translated Target = {trans_targ}")
+            
             detour_target="{}{}".format(detour_prefix,trans_targ)
             # if 'main' function exists locally, then we'll have a collision with new main during compilation
             # renaming to 'patchmain'
@@ -2521,17 +2556,17 @@ class CodeCleaner:
                         size=len(argArray)
                         while j < size:
                             fn_ptr=False
-                            print("DEBUG : {} [{}] ".format(argArray[j],j))
+                            dprint("DEBUG : {} [{}] ".format(argArray[j],j))
                             arg=argArray[j]
                             # this looks like a function pointer
                             while arg.count('(') != arg.count(')') and j+1 < size:
                                 j+=1
                                 arg+=","+argArray[j]
-                                print("DEBUG [fnptr]: arg = '{}'".format(arg))
+                                dprint("DEBUG [fnptr]: arg = '{}'".format(arg))
                                 fn_ptr=True
                             arg = arg.strip()
                             argTuple = self.getTypeAndLabel(arg,fn_ptr)
-                            print("DEBUG: arg = {} [{}] [argTuple = {}]".format(arg,argLine,argTuple))
+                            dprint("DEBUG: arg = {} [{}] [argTuple = {}]".format(arg,argLine,argTuple))
                             args.append(argTuple)
                             j+=1
                         break
@@ -2544,10 +2579,10 @@ class CodeCleaner:
             x1=re.search(r"\b("+ltarget+r")\b",targetHeader)
             x2=re.search(r"\b("+trans_targ+r")\b",targetHeader)
             if x1:
-                print("Replacing : {} with {} in '{}'".format(ltarget,detour_target,targetHeader))
+                print("[x1] Replacing : {} with {} in '{}'".format(ltarget,detour_target,targetHeader))
                 targetHeader = re.sub(r"\b("+ltarget+r")\b",detour_target,targetHeader)
             else:
-                print("Replacing : {} with {} in '{}'".format(trans_targ,detour_target,targetHeader))
+                print("[x2] Replacing : {} with {} in '{}'".format(trans_targ,detour_target,targetHeader))
                 #targetHeader = targetHeader.replace(trans_targ,detour_target)
                 targetHeader = re.sub(r"\b("+trans_targ+r")\b",detour_target,targetHeader)
             wrapperStub += targetHeader.split("(", maxsplit=1)[0] #remove arguments
@@ -2589,7 +2624,7 @@ class CodeCleaner:
                 dataDef = d.split(";")[0]
                 dataDef = dataDef.split("=")[0].strip()
                 dataType, dataName = self.getTypeAndLabel(dataDef)
-                array_size=len(re.findall("\[\d*\]",dataName))
+                array_size=get_array_size(dataName)
                 if ":" not in call_me[target]:
                     call_me[target]+=":"
                 else:
@@ -2597,7 +2632,7 @@ class CodeCleaner:
                 if array_size>=2:
                     print("SORRY: two-dimensional array objects just aren't working right now")
                     print(" ==> "+dataType+" "+dataName)
-                    wrapperStub += "// --- WARNING! Two-dimensional array objects are not yet supported"
+                    wrapperStub += "\t// --- WARNING! Two-dimensional array objects are not yet supported\n\t//"
                     wrapperStub += "\tvoid* my%s,\n" % dataName
                     call_me[target]+=dataName
                 #elif array_size==1 and "*" not in dataType:
@@ -2649,12 +2684,14 @@ class CodeCleaner:
                     dataDef = dataDef[3:] # handle commented out cases
                 dataDef = dataDef.split("=")[0].strip()
                 dataType, dataName = self.getTypeAndLabel(dataDef)
-                array_size=len(re.findall("\[\d*\]",dataName))
+                array_size=get_array_size(dataName)
+
                 if array_size>=2:
                     print("// --- WARNING! Two-dimensional array objects are not yet supported\n")
+                    wrapperStub += "// UNSUPPORTED : "
                     wrapperStub += "\tp%s = (%s*) my%s;\n" % (dataName, dataType, dataName)
                     print(" // --- END OF WARNING!\n")
-                #elif array_size==1 and "*" not in dataType:
+                
                 elif array_size==1 and (("*" not in dataType) or ("*" in dataType and "[]" in dataName)):
                     dataNamex = dataName.split("[")[0] # handle arrays
                     wrapperStub += "\tp%s = (%s*) my%s;\n" % (dataNamex, dataType, dataNamex)
@@ -2663,6 +2700,7 @@ class CodeCleaner:
     
             for s in stubMap[target].keys():
                 name = self.get_stub_name(s)
+                array_size=get_array_size(name)
                 pname=f"p{name}"
                 dname=translation_dict.get(name,name)
                 if name in list(VALIST_TRANSFORM.keys()):
@@ -2693,14 +2731,17 @@ class CodeCleaner:
             # there's a weird behavior with IDA, it translates functions prepended with '_' to without
             #wrapperStub += "my%s(\n" % target
             #wrapperStub += "%s(\n" % target
-            wrapperStub += "%s(\n" % ltarget
+            
+            wrapperStub += "%s(\n" % trans_targ
+            print(f"DEBUG => wrapperStub = {wrapperStub}")
     
             for argTuple in args:
+                dprint(f"DEBUG: argTuple = {argTuple}")
                 argName = argTuple[1]
                 wrapperStub += "\t\t%s,\n" % (argName)
-    
-            if args: # list not empty
-                wrapperStub = wrapperStub[:-2]  #strip ,\n
+            
+            while wrapperStub.rstrip().endswith(','):    
+                wrapperStub = wrapperStub.rstrip()[:-1]  #strip ,\n
     
             wrapperStub += "\n\t);\n"
     
@@ -2709,19 +2750,6 @@ class CodeCleaner:
             # asm
             #t="patchmain" if target=="main" else target
             wrapperStub += "\n\t /* ASM STACK "+ltarget+" HERE */\n"
-    
-            # wrapperStub += "\n\tasm(\n"
-    
-            # wrapperStub += "\t\"nop\\n\\t\"\n\t\"nop\\n\\t\"\n\t\"nop\\n\\t\"\n\t\"nop\\n\\t\"\n"
-            # wrapperStub += "\t\"add $0x%x,%%esp\\n\\t\"\n" % (numFuncArgs * 4)
-            # wrapperStub += "\t\"pop %ebx\\n\\t\"\n"
-            # wrapperStub += "\t\"pop %ebp\\n\\t\"\n"
-            # wrapperStub += "\t\"pop %ecx\\n\\t\"\n"
-            # wrapperStub += "\t\"add $0x%x,%%esp\\n\\t\"\n" % (numStubs * 4)
-            # wrapperStub += "\t\"push %ecx\\n\\t\"\n"
-            # wrapperStub += "\t\"ret\\n\\t\"\n"
-    
-            # wrapperStub += "\t);\n"        
     
             # ret and close
             wrapperStub += "\n\treturn"
@@ -2880,11 +2908,19 @@ class GenprogDecomp:
                 funcs_=re.sub(":"," ",funcs_)
                 funcs=re.sub("_____","::",funcs_)
                 # we're now assuming that we're getting mangled symbols as input
-                funcList = funcs.split(" ")
-                print(f"FUNCLIST='{funcList}'",flush=True)
-                for i in funcList:
+                funcList_ = funcs.split(" ")
+                print(f"FUNCLIST='{funcList_}'",flush=True)
+                funcList=list()
+                for i in funcList_:
                     print(f"{i} ",flush=True)
-                    print(f" => {self.mang2demLUT[i]}",flush=True)
+                    if self.mang2demLUT.get(i,None) is not None:
+                        print(f" => {self.mang2demLUT[i]}",flush=True)
+                        funcList.append(i)
+                    else:
+                        print(f"ERROR: {i} does not exist as a local symbol. SKipping.")
+                if len(funcList)==0:
+                    print(f"Nothing to do. Exiting.")
+                    import sys;sys.exit(-1);
                 detour_funcs= [ (self.mang2demLUT[f],f) for f in funcList ]
                 x={'target':target,'path':path,'funcList':funcList,'detour_funcs':detour_funcs,'symbols_lut':symbols_lut}
                 self.targets.append(x)
@@ -3046,6 +3082,9 @@ class GenprogDecomp:
                 print(f"DETOUR FUNCS 'detour_funcs[{idx}]' => '{detour_funcs[idx]}'")
                 print(f"GUESSED FUNCS: {guessed_protos}")
                 
+                used_symbols=[ get_function_name(x.strip()) for x in data_decls+stubs['prototypes'] if not x.strip().startswith("//")]
+                
+
                 for rmdd in rm_decomp_decl:
                     print(f"Removing existing weaker conflicting declaration: {rmdd}")
                     del decomp_decls[decomp_decls.index(rmdd)]
@@ -3073,7 +3112,11 @@ class GenprogDecomp:
             basic_finalOutput="\n\n"+"\n".join(basic_)+"\n\n"
 
             #let's clean-up the GLIBC references to avoid collision
-            decomp_defs = cleaner.prevent_glibc_collision(decomp_defs,CSTDIO_FUNCS+glibc_symbols+ext_symbols)
+            # and only clean-up references that are used and external (maybe this should be used everywhere?)
+            used_extsymbols = [x for x in used_symbols if x in CSTDIO_FUNCS+glibc_symbols+ext_symbols]
+            print(f"DEBUG : USED EXTERNAL SYMBOLS => {used_extsymbols}")
+            if len(used_extsymbols)>0:
+                decomp_defs = cleaner.prevent_glibc_collision(decomp_defs,used_extsymbols)
 
             # let's uniquify the header lines by the set datatype
             print("\nFUNC_HEADERS:\n{}".format(" -- "+"\n -- ".join(funcHeaders['prototypes'])))
@@ -3194,20 +3237,25 @@ class GenprogDecomp:
                 di=re.sub("::","__",i)
                 sym_i=self.dem2mangLUT[i]
                 define=f"{di}:{sym_i}"
+                ti=translate_dict.get(i,i)
+                print(f"DETOURS = {i} vs {ti}")
+                
                 if self.detour_entry_fn_prefix:
-                    di="{}{}".format(self.detour_entry_fn_prefix,i)
+                    di="{}{}".format(self.detour_entry_fn_prefix,ti)
                     di=re.sub("::","__",di)
-                    define="{}:{}".format(di,sym_i)
-                elif i=="main":
-                    di="patchmain"
                     define="{}:{}".format(di,sym_i)
 
                 if i=="main":
-                    define+="+7"
+                    # Ideally, should read through the disasm and find the correct offset
+                    #  for dynamically linked binaries, this is after the EBX register has been loaded
+                    if len(ext_symbols)>0:
+                        define+="+23"
+                    else:
+                        #  for statically linked binaries, this is after initial population of registers required to return to __libc_start_main
+                        define+="+7"
                 detours.append(define)
 
             
-            #detour_list=[ str(f+":"+self.detour_entry_fn_prefix+f) for f in detour_funcs ]
             makefile_dict={
             "BIN":target,
             "MYSRC":target+"_recomp.c",
@@ -3290,6 +3338,9 @@ def main():
                         help='Detour prefix to append to detour entry function')
     parser.add_argument('target_list',
                         help='path to the list of target binaries + paths')
+    parser.add_argument("--debug",dest='debug',
+                        default=False,action='store_const',const=True,
+                        help='Print more debug information')
     parser.add_argument("--strip-binary",dest='strip',
                         default=False,action='store_const',const=True,
                         help='get decompiled output from stripped version of binary')
@@ -3304,11 +3355,14 @@ def main():
                     help='r2ghidra command line <SYM> is symbol to decompile, <C_OUT> is decompile out file')
 
     args, unknownargs = parser.parse_known_args()
+    global DEBUG
+    DEBUG=args.debug
     if not os.path.exists(args.decompdir):
         os.makedirs(args.decompdir) # make sure that the decomp dir exists before using it
     gpd = GenprogDecomp(args.target_list, args.scriptpath, args.ouput_directory,args.detfn_prefix,args.r2,args.strip,args.decompdir,args.version2)
     gpd.get_target_info(args.decompdir)
     gpd.run()
+    import sys;sys.exit(0);
 
 main()
 
