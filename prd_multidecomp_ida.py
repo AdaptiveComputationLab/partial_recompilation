@@ -1441,8 +1441,6 @@ class CodeCleaner:
         
         problems=missing_type_defs+list(problems-set(plist)) # let's make sure the original missing types are ordered first
         prev_undefined=None
-        print(f"tiny_page in undefined=> {'tiny_page' in undefined}; tiny_page in RESOLVED => {'tiny_page' in RESOLVED}")
-        print(f"malloc_t requires : {x_requires['malloc_t']} (uses tiny_page: {uses_x['tiny_page']})")
         while(len(undefined)>0):    
             prev_undefined=copy.copy(undefined)
             updated=False
@@ -1525,7 +1523,21 @@ class CodeCleaner:
         return "\n".join(typedefs),recovered_types,needs_stdio
         
 
-
+    def aggregate_sets(self,x_init,known,lookup):
+        x_=x_init
+        union_x=set([ i for y in x_ for i in lookup.get(y,set())-known])|x_
+        return union_x
+    
+    def fully_resolve_aggregates(self,x_init,known,lookup):
+        changed=True
+        x_=copy.copy(x_init)
+        while changed:
+            x_delta=self.aggregate_sets(x_,known,lookup)
+            if x_delta==x_:
+                changed=False
+            x_=x_|x_delta
+        return x_
+            
 
     def rule_one(self,x:str,x_requires:dict,resolved:set):
         valid=None
@@ -1539,8 +1551,11 @@ class CodeCleaner:
     def rule_two(self,x,x_requires:dict,uses_x:dict,resolved:set,fnptr_types:list):
         x_reqs=x_requires[x]-resolved
         uses_x_x=uses_x.get(x,set())-resolved
-        req_union=set([ x for y in x_reqs for x in x_requires[y]-resolved ])|x_reqs
-        uses_union=set([ x for y in x_reqs for x in uses_x.get(y,[])-resolved ])|uses_x_x
+        #req_union=set([ x for y in x_reqs for x in x_requires[y]-resolved ])|x_reqs
+        req_union=self.aggregate_sets(x_reqs,resolved,x_requires)
+        #uses_union=set([ x for y in x_reqs for x in uses_x.get(y,[])-resolved ])|uses_x_x
+        uses_union=self.aggregate_sets(x_reqs,resolved,uses_x)|uses_x_x
+        #uses_union=self.fully_resolve_aggregates(x_reqs,resolved,uses_x)|uses_x_x
         valid_=None
         print(f"DEBUG: CHECKING RULE 2: {x} is valid [{req_union <= uses_union}] => {req_union} ({uses_union})")
         if req_union <= uses_union:
@@ -1548,6 +1563,8 @@ class CodeCleaner:
             if x in fnptr_types:
                 valid_.add(x)
             print(f"DEBUG: RULE 2: {x} is valid [{valid_}] => {req_union} ({uses_union})")
+        else:
+            print(f"DEBUG: RULE 2: {x} failed REQUIRE_UNION:{req_union}  is not a subset of USES_UNION:{uses_union}")
         return valid_
 
     def process_rules_for_x(self,x:str,x_requires:dict,uses_x:dict,resolved:set,orig_x_requires:dict,fnptr_types:list):
