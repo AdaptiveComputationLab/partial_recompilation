@@ -61,3 +61,76 @@ typedef struct {
 
 
 
+//typedef FILE _IO_FILE;
+// typedef long long int __int64;
+#define _IO_FILE FILE
+#define __int64 long long int
+#define __int32 int
+#define __int16 short int
+#define __int8  char
+
+
+#define __DEFAULT_FN_ATTRS __attribute__((__always_inline__, __nodebug__))
+
+
+/*----------------------------------------------------------------------------*\
+|* readfs, readgs
+|* (Pointers in address space #256 and #257 are relative to the GS and FS
+|* segment registers, respectively.)
+\*----------------------------------------------------------------------------*/
+static __inline__ __attribute__((always_inline)) unsigned char __readfsbyte(const unsigned long Offset)
+{
+	unsigned char value;
+	__asm__("movb %%fs:%a[Offset], %b[value]" : [value] "=q" (value) : [Offset] "irm" (Offset));
+	return value;
+}
+ 
+static __inline__ __attribute__((always_inline)) unsigned short __readfsword(const unsigned long Offset)
+{
+	unsigned short value;
+	__asm__("movw %%fs:%a[Offset], %w[value]" : [value] "=q" (value) : [Offset] "irm" (Offset));
+	return value;
+}
+ 
+static __inline__ __attribute__((always_inline)) unsigned long __readfsdword(const unsigned long Offset)
+{
+	unsigned long value;
+	__asm__("movl %%fs:%a[Offset], %k[value]" : [value] "=q" (value) : [Offset] "irm" (Offset));
+	return value;
+}
+
+static __inline__  __attribute__((__always_inline__)) unsigned long long int __readfsqword(unsigned long Offset) 
+{
+	unsigned long long int value;
+	__asm__ ("mov %%fs:(%1), %0" : "=r" (value) : "r" (Offset));
+	return value;
+}
+
+static __inline__ __attribute__((always_inline)) unsigned char __readgsbyte(const unsigned long Offset)
+{
+	unsigned char value;
+	__asm__("movb %%gs:%a[Offset], %b[value]" : [value] "=q" (value) : [Offset] "irm" (Offset));
+	return value;
+}
+ 
+static __inline__ __attribute__((always_inline)) unsigned short __readgsword(const unsigned long Offset)
+{
+	unsigned short value;
+	__asm__("movw %%gs:%a[Offset], %w[value]" : [value] "=q" (value) : [Offset] "irm" (Offset));
+	return value;
+}
+ 
+static __inline__ __attribute__((always_inline)) unsigned long __readgsdword(const unsigned long Offset)
+{
+	unsigned long value;
+	__asm__("movl %%gs:%a[Offset], %k[value]" : [value] "=q" (value) : [Offset] "irm" (Offset));
+	return value;
+}
+
+static __inline__  __attribute__((__always_inline__)) unsigned long long int __readgsqword(unsigned long Offset) 
+{
+	unsigned long long int value;
+	__asm__ ("mov %%gs:(%1), %0" : "=r" (value) : "r" (Offset));
+	return value;
+}
+

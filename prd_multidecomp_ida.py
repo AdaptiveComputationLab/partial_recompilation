@@ -1237,7 +1237,13 @@ class CodeCleaner:
                     dprint(f"REASON 3b: '{i}' is FNPTR TYPE")
                     # Reason #3b - function pointers 
                     mtch=re.match(r"^\s*(typedef)\s+((\w+(\s+\w+)*)\s+(\(\s*\*\s*(\w+)\))\s*(\((.*)\)))\s*;\s*$",line);
-                    _ret=self.update_params_for_typeclass(mtch.group(2),forward_decls,enum_decls)
+                    if not mtch:
+                        mtch=re.match(r"^\s*(typedef)\s+((\w+(\s+\w+)*)\s*(\(\s*\*\s*(\w+::\w+)\))\s*(\((.*)\)))\s*;\s*$",line);
+                    try:
+                        _ret=self.update_params_for_typeclass(mtch.group(2),forward_decls,enum_decls)
+                    except Exception as e:
+                        print(f"Line '{line}' doesn't match function pointer extracting regexp")
+                        raise e
                     changeit,newparams,fn_noparams,used_fwddecls,used_enumdecls=_ret
                     if changeit:
                         line=f"{mtch.group(1)} {fn_noparams}({newparams});"
@@ -1498,11 +1504,13 @@ class CodeCleaner:
         print("DONE -- with dependencies",flush=True)
 
         
-        typedefs=["\n// POUND DEFINES "]+[pound_defines[x] for x in pnddef]+\
+        p_typedefs=["\n// POUND DEFINES "]+[pound_defines[x] for x in pnddef]+\
             ["\n// FORWARD DECLS "]+[forward_decls[x]['line'] for x in list(fwd_decl_types)]+\
             ["\n// ENUMERATED TYPES "]+[enum_decls[x] for x in enum_types]+\
             ["\n// THESE TYPES ARE MISSING INFO FOR PROPER RESOLUTION "]+[f"{problematic_types.get(x,'// '+x)}" for x in problems]+\
             ["\n// TYPE RESOLUTION ORDER HERE"]
+
+        typedefs=[self.cpp_to_c(x) for x in p_typedefs]
         recovered_types=simple_types+collective_types+fnptr_types
         
         needs_stdio=False
@@ -1518,11 +1526,17 @@ class CodeCleaner:
             elif "(...)" in line:
                 #transformed_line=re.sub(r'\b\((\*\w+)\)\s*\(\.\.\.\)',r'\1',line);
                 transformed_line=re.sub(r'\((\*\w+)\)\s*\(\.\.\.\)',r'\1',line);
-                line=f"// included with std headers {i} | "+line
-            typedefs.append(line)
+                line=f"// variadic function needs more context : {i} | "+line
+            typedefs.append(self.cpp_to_c(line))
         return "\n".join(typedefs),recovered_types,needs_stdio
         
-
+    # ehhh, should be similar to def transform_cpp
+    def cpp_to_c(self,line):
+        line=re.sub(r'::','__',line)
+        line=re.sub(r'<(\w+)\*>',r'_\1_p_',line)
+        line=re.sub(r'<(\w+)>',r'_\1_',line)
+        return line
+        
     def aggregate_sets(self,x_init,known,lookup):
         x_=x_init
         union_x=set([ i for y in x_ for i in lookup.get(y,set())-known])|x_
@@ -1556,8 +1570,9 @@ class CodeCleaner:
         #uses_union=set([ x for y in x_reqs for x in uses_x.get(y,[])-resolved ])|uses_x_x
         uses_union=self.aggregate_sets(x_reqs,resolved,uses_x)|uses_x_x
         #uses_union=self.fully_resolve_aggregates(x_reqs,resolved,uses_x)|uses_x_x
+
         valid_=None
-        print(f"DEBUG: CHECKING RULE 2: {x} is valid [{req_union <= uses_union}] => {req_union} ({uses_union})")
+        print(f"DEBUG: CHECKING RULE 2: {x}  [{x_reqs}] is valid [{req_union <= uses_union}] => {req_union} ({uses_union})")
         if req_union <= uses_union:
             valid_=req_union
             if x in fnptr_types:
@@ -1576,12 +1591,12 @@ class CodeCleaner:
         else:
             r2=self.rule_two(x,x_requires,uses_x,resolved,fnptr_types)
             if r2:
-                new_defines=self.reorder_(r2,x_requires,orig_x_requires,fnptr_types)
+                new_defines=self.reorder_(r2,x_requires,orig_x_requires,fnptr_types,uses_x)
                 #new_defines = r2
                 check_for_fwddecl = r2
         return new_defines,check_for_fwddecl
 
-    def reorder_(self,resolvable,x_requires,orig_x_requires,fnptr_types):
+    def reorder_(self,resolvable,x_requires,orig_x_requires,fnptr_types,uses_x):
         
         first=list()
         second=list()
@@ -1590,15 +1605,27 @@ class CodeCleaner:
         initial_x_requires=orig_x_requires['original']
         reduced_x_requires=orig_x_requires['reduced']
         dprint(f"DEBUG: RESOLVABLE => {resolvable}")
+        resolve_sym_diff=dict()
         for idx,o in enumerate(resolvable):
-            dprint(f"DEBUG: {o} [resolvable:{resolvable}] | {reduced_x_requires[o]} || {initial_x_requires[o]}")
+            resolve_sym_diff[o]=resolvable-(reduced_x_requires[o]^initial_x_requires[o])
+        for idx,o in enumerate(resolvable):
+            dprint(f"DEBUG: {o} [resolvable:{resolvable}] | {reduced_x_requires[o]} || {initial_x_requires[o]} [uses_x: {uses_x[o]}]")
+            dprint(f"DEBUG: {o} => SYM DIFF: {(reduced_x_requires[o]^initial_x_requires[o])}")
+            dprint(f"DEBUG: {o} => RESOLVABLE SYM DIFF: {resolve_sym_diff[o]}")
             not_o=copy.copy(resolvable).remove(o)
             # intersect the original x_requires[o] with current resolvable set
             # if this is empty, add it because we have no direct uses and any typedef'd struct is fwd declared
             direct_unresolved = list(resolvable & reduced_x_requires[o])
             dprint(f"DEBUG: CHECK(0) for {o}: direct_unresolved=> {direct_unresolved} [reduced_x_requires: {reduced_x_requires[o]}]")
+            fewer=False
+            flen=[len(resolve_sym_diff[xx]) for xx in resolvable if xx != o ]
+            if len(flen)>0:
+                fewer=len(resolve_sym_diff[o])<min(flen)
             if o in reduced_x_requires[o]:
-                if o in direct_unresolved and (o in initial_x_requires[o]|x_requires[o]):
+                if fewer:
+                    first.append(o)    
+                    dprint(f"DEBUG: FEWER: {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
+                elif o in direct_unresolved and (o in initial_x_requires[o]|x_requires[o]):
                     if len(direct_unresolved)>1:
                         # let's put self-referencing type declarations that depend on other unresolved types at the end
                         dprint(f"DEBUG: FOURTH(1): {o} [{x_requires[o]}] => {direct_unresolved} [{initial_x_requires[o]}]")
@@ -1620,7 +1647,6 @@ class CodeCleaner:
         # else the remaining order doesn't matter
                 
         resolved_order= first+second+third+fourth
-        dprint(f"DEBUG: RESOLVED ORDER {resolved_order}")
         return resolved_order
 
 
@@ -2286,13 +2312,13 @@ class CodeCleaner:
     def make_pcgc_stubs(self, stublines, funcs, glibc_symbols):
         stubMap = {}
         stdio_collision = []
-        
+        print(f"Stubline prototypes: {','.join(x for x in stublines['prototypes'])}");
         for stub in stublines['prototypes']:
             skip = False
             for funcline in funcs:
                 if funcline in stub:
                     skip = True # skip functions that are already declared below
-                    # print(funcline, "in", stub)
+                    print(funcline, " in " , stub)
                     break
             if skip:
                 # print("Skipping ", stub)
@@ -2476,8 +2502,10 @@ class CodeCleaner:
         # s/(\w+)<(\w+)>/${1}_${2}_/g
         d=re.sub(r"(\S+)::(\S+)",r"\1___\2",d)
         # s/(\w+)<(\w+)*>/${1}_${2}_p_/g
-        d=re.sub(r"(\S+)<(\S+)*>",r"\1_\2_p_",d)
+        print(f"transforming : (\S+)<(\S+)\*> to \\1_\\2_p_")
+        d=re.sub(r"(\S+)<(\S+)\*>",r"\1_\2_p_",d)
         # s/(\w+)::(\w+)/${1}___${2}/g
+        print(f"transforming : (\S+)<(\S+)> to \\1_\\2_")
         d=re.sub(r"(\S+)<(\S+)>",r"\1_\2_",d)
         # let's get rid of ::$[0-9a-fA-F]
 
@@ -2855,7 +2883,7 @@ class GenprogDecomp:
                 self.dem2mangLUT=dict()
             self.dem2mangLUT.update(x['dem2mangLUT'])
         else:
-            cmd=["/usr/bin/nm",binary_path]
+            cmd=["/usr/bin/nm","-D",binary_path]
             #cmd=["/usr/bin/nm","--demangle",binary_path]
             symproc=subprocess.Popen(" ".join(cmd),stdout=subprocess.PIPE,stderr=subprocess.PIPE,shell=True)
             #ret=symproc.poll()
@@ -2869,7 +2897,7 @@ class GenprogDecomp:
             symbol_dict = dict()
             count=0;MAX=len(lines)
             for x in lines:
-                if (count==len(lines) or (count%int(MAX/10))==0):
+                if (count==len(lines) or (count%int(MAX/min(10,MAX)))==0):
                     print(f"{count}/{len(lines)} completed")
                 count+=1
                 if len(x)<12:
@@ -2930,7 +2958,7 @@ class GenprogDecomp:
                 funcList=list()
                 for i in funcList_:
                     print(f"{i} ",flush=True)
-                    if self.mang2demLUT.get(i,None) is not None:
+                    if self.mang2demLUT and self.mang2demLUT.get(i,None) is not None:
                         print(f" => {self.mang2demLUT[i]}",flush=True)
                         funcList.append(i)
                     else:
@@ -2966,6 +2994,7 @@ class GenprogDecomp:
             detour_syms=[x[1] for x in TARG['detour_funcs']]
             symbols_lut = TARG['symbols_lut']
             binpath=path
+            nostripbin=binpath
             decompile_error_count=0
             if self.strip:
                binpath=strip_binary(path) 
@@ -2992,7 +3021,7 @@ class GenprogDecomp:
             print("="*100,flush=True)
 
             print("    --- Getting typedef mappings...",flush=True)
-            structDump = idaw.get_typedef_mappings(binpath,decompdir,self.use_new_features)
+            structDump = idaw.get_typedef_mappings(nostripbin,decompdir,self.use_new_features)
             # print(structDump)
             typedefLines = cleaner.remove_artifacts(structDump,self.use_new_features)
             needs_stdio=False
@@ -3006,10 +3035,10 @@ class GenprogDecomp:
                 finalOutput += typedefLines
 
             print("    --- Decompiling target functions...",flush=True)
-            data_symbols = [ x['name'] for s in ['d','D','b','B'] for x in symbols_lut[s] ]
-            fn_symbols = [ x['name'] for s in ['t','T','U','w','W'] for x in symbols_lut[s] ]
-            glibc_symbols = [ x['name'] for s in ['t','T','U','w','W'] for x in symbols_lut[s] if x['is_glibc'] and (x['name'] not in CSTDIO_DATASYMS)]
-            ext_symbols = [ x['name'] for s in ['U'] for x in symbols_lut[s] ]
+            data_symbols = [ x['name'] for s in ['d','D','b','B'] if (symbols_lut.get(s,None) != None) for x in symbols_lut[s] ]
+            fn_symbols = [ x['name'] for s in ['t','T','U','w','W'] if (symbols_lut.get(s,None) != None) for x in symbols_lut[s] ]
+            glibc_symbols = [ x['name'] for s in ['t','T','U','w','W'] if (symbols_lut.get(s,None) != None) for x in symbols_lut[s] if x['is_glibc'] and (x['name'] not in CSTDIO_DATASYMS)]
+            ext_symbols = [ x['name'] for s in ['U'] if (symbols_lut.get(s,None) != None) for x in symbols_lut[s] ]
             finalOutput += cleaner.generate_det_placeholders()
 
             fulldecomp_code=""
@@ -3067,7 +3096,7 @@ class GenprogDecomp:
                 dataMap, dataRemoveList, d, data_decls = cleaner.get_data_declarations(decomp_code,data_symbols,dataMap, data_decls)
                 known_hexray_issue = [ x for x in d['local_vars'] if "dword" in x ]
                 #if len(known_hexray_issue)>0 and self.r2ghidra_cmd:
-                if self.r2ghidra_cmd:
+                if self.r2ghidra_cmd and len(known_hexray_issue)>0:
                     print(f"KNOWN HEX RAY ISSUE: {known_hexray_issue}")
                     issue_regex=r"&("+"|".join(known_hexray_issue)+r")\b"
                     issue_re=re.compile(issue_regex)
@@ -3089,6 +3118,7 @@ class GenprogDecomp:
                 decomp_per_func[detour_funcs[idx]]=h[d:-1]
                 #return stubs, funcs, fulldecomp, lstubs, lfuncs, fn_start,global_fns
                 header_decls+=h
+                dprint("HEADER DECLS '{}' => {}".format(func,h))
                 print("DATA REMOVE LIST '{}' => {}".format(func,dataRemoveList))
                 print("GLOBAL DATA MAP '{}' => {}".format(func,dataMap))
                 print("DATA DECLS '{}' => {}".format(func,data_decls))
@@ -3150,7 +3180,13 @@ class GenprogDecomp:
                 full_+=["\n","//"+"-"*68,"// EBX mechanism needed to interface with original binary's PLT","\n",
                     "unsigned int preEBX = NULL;","unsigned int origPLT_EBX = NULL;","\n"]
 
-            full_+=header_decls[0:6]+["\n","//"+"-"*68,"// Function Declarations","\n"]
+            print(f"decomp_finalOutput => header_decls: {header_decls[0:6]}")
+            #full_+=header_decls[0:6]+["\n","//"+"-"*68,"// Function Declarations","\n"]
+            # the above seems to introduce duplications of function prototypes, so the following is a workaround
+            for x in header_decls[0:6]:
+                if x not in data_decls+decomp_decls+decomp_defs+func_decls:
+                    full_+=[x]
+            full_+=["\n","//"+"-"*68,"// Function Declarations","\n"]
             full_+=func_decls+["\n"]
             full_+=["\n","//"+'-'*68,"// Decompiled Variables"]+data_decls+["\n"]
             full_+=["\n","//"+'-'*68,"// Decompiled Function Declarations"]+decomp_decls+["\n"]
@@ -3167,10 +3203,8 @@ class GenprogDecomp:
             stubMap, nonCGCList= cleaner.make_pcgc_stubs(stubs, funcHeaders['prototypes'],glibc_symbols+ext_symbols if self.use_new_features else None)
             for f in detour_funcs:
                 #stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(stubs_per_func[f],funcHeaders_per_func[f])
-                #print(f"f=>{f}")
-                #print(f"updated_stubs=>{updated_stubs}")
-                #print(f"updated_stubs[f]=>{updated_stubs[f]}")
-                stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(updated_stubs[f],funcHeaders['prototypes'],glibc_symbols+ext_symbols)
+                dprint(f"DEBUG [{f}]  :  updated_stubs[f]=>{updated_stubs[f]}")
+                stubMap_[f], nonCGCList_[f] = cleaner.make_pcgc_stubs(updated_stubs[f],funcHeaders['prototypes'],glibc_symbols+ext_symbols if self.use_new_features else None)
             # finalOutput = cleaner.remove_nonCGC_calls(finalOutput, nonCGCList)
             decomp_finalOutput = cleaner.replace_stubs(decomp_finalOutput, stubMap)
             # pdr update - let's not rename the functions
