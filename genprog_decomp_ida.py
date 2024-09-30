@@ -273,7 +273,7 @@ class CodeCleaner:
                                 line = line.replace(match, newLine)
 
                         if matches:
-                            print("      Associating %s with %s" % (typedefLine, line))
+                            print("      Associating %s with %s [%s]" % (typedefLine, line, origName))
                             done.add(origName)
                             # substituteMap[typedefLine] = line
                         # break
@@ -349,7 +349,6 @@ class CodeCleaner:
                 body = array[1].strip()
                 argString = body.split("}")[0]
                 typedef_decl=True
-                # print(argString)
             else:
                 array = defline.split(")", maxsplit=1)
                 header = array[0].split("(")[1].strip()
@@ -904,8 +903,7 @@ class CodeCleaner:
                         arg = arg.strip()
                         argTuple = self.getTypeAndLabel(arg)
                         args.append(argTuple)
-                    break
-                    
+                    break                    
 
         if target == "main":
             target = "patch" + target
