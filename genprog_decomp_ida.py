@@ -381,32 +381,32 @@ class CodeCleaner:
             for argTypeRaw, argName, argOrig in args:
                 isfunc,type_labels = self.is_function_prototype(argTypeRaw)
                 if not isfunc:
-                argType = self.get_typebase(argTypeRaw)
-                argTypeArray = argType.strip().rsplit(maxsplit=1)
-                # print(argTypeArray)
-                if len(argTypeArray) > 1:
+                    argType = self.get_typebase(argTypeRaw)
+                    argTypeArray = argType.strip().rsplit(maxsplit=1)
+                    # print(argTypeArray)
+                    if len(argTypeArray) > 1:
                         type_labels = [ argTypeArray[-1] ]
-                else:
+                    else:
                         type_labels = [ argTypeArray[0] ]
-                # print("    --> baseType %s" % (argTypeLabel))
-                # print("    --> typeName   %s" % (typeName))
-                # print("      - defined: ", defined)
+                    # print("    --> baseType %s" % (argTypeLabel))
+                    # print("    --> typeName   %s" % (typeName))
+                    # print("      - defined: ", defined)
                 for argTypeLabel in type_labels:
-                if argTypeLabel == typeName:
-                    continue # skip self references
-                if argTypeLabel not in PRIMITIVES and argTypeLabel not in defined:
-                    if not(argTypeLabel in forward_declared and \
-                           (not self.is_basic_typedef(line))): # move non-struct non-union typedefs
+                    if argTypeLabel == typeName:
+                        continue # skip self references
+                    if argTypeLabel not in PRIMITIVES and argTypeLabel not in defined:
+                        if not(argTypeLabel in forward_declared and \
+                               (not self.is_basic_typedef(line))): # move non-struct non-union typedefs
 
-                        if argTypeLabel not in waitingStructs.keys():
-                            waitingStructs[argTypeLabel] = []
-                        waitingStructs[argTypeLabel].append((line, argTypeLabel, argTypeRaw))
-                        rearranged = True
-                        resolved = False
-                        print("    --> unresolved type", argTypeLabel)
-                        print("         ", forward_declared, (argTypeLabel in forward_declared))
-                        print("        %s || %s" % (line, argTypeRaw))
-                        # print("        defined: ", defined)
+                            if argTypeLabel not in waitingStructs.keys():
+                                waitingStructs[argTypeLabel] = []
+                            waitingStructs[argTypeLabel].append((line, argTypeLabel, argTypeRaw))
+                            rearranged = True
+                            resolved = False
+                            print("    --> unresolved type", argTypeLabel)
+                            print("         ", forward_declared, (argTypeLabel in forward_declared))
+                            print("        %s || %s" % (line, argTypeRaw))
+                            # print("        defined: ", defined)
 
 
         if resolved:
@@ -504,8 +504,8 @@ class CodeCleaner:
                     print("Adding Placeholder ", placeholder)
                     definitions += placeholder+";\n"
                 else:
-                print("Adding Placeholder Struct ", placeholder)
-                definitions += "struct "+placeholder+";\n"
+                    print("Adding Placeholder Struct ", placeholder)
+                    definitions += "struct "+placeholder+";\n"
 
         for line in remainingLines:
             definitions += line+"\n"
@@ -894,17 +894,16 @@ class CodeCleaner:
                 if len(array)<2:
                     break #no arguments
                 else:
-                argLine = array[1].strip(";").strip(")")
-                # print(f, argLine)
-                if len(argLine.strip()) <= 0:
-                    break #no arguments
-                argArray = argLine.split(",")
-                for arg in argArray:
-                    arg = arg.strip()
-                    argTuple = self.getTypeAndLabel(arg)
-                    args.append(argTuple)
-                break
-                    
+                    argLine = array[1].strip(";").strip(")")
+                    # print(f, argLine)
+                    if len(argLine.strip()) <= 0:
+                        break #no arguments
+                    argArray = argLine.split(",")
+                    for arg in argArray:
+                        arg = arg.strip()
+                        argTuple = self.getTypeAndLabel(arg)
+                        args.append(argTuple)
+                    break                    
 
         if target == "main":
             target = "patch" + target
